@@ -24,3 +24,8 @@ jobs:
         continue-on-error: true
       - run: python3 grids.py --probe --only dmi
         continue-on-error: true
+      # Rainbow.ai (7 Nov): with the secret, what each layer answers (snapshot, a tile's size and mode, the dbz_u8 palette); without it, «no key — skipped»
+      - run: python3 rainbow.py --probe
+        continue-on-error: true
+        env:
+          RAINBOW_API_KEY: ${{ secrets.RAINBOW_API_KEY }}

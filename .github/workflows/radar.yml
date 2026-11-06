@@ -1,6 +1,6 @@
 # Radar CH — converts the newest MeteoSwiss precipitation radar picture every ten minutes and publishes it on GitHub Pages;
 # the national radars with a keyless WMS (DWD, FMI) are fetched beside it (wms.py), the gridded ones (SMHI, GeoSphere's INCA analysis) by grids.py,
-# and all of them are listed in sources.json.
+# Rainbow.ai's world mosaic by rainbow.py (keyed, off until the secret exists), and all of them are listed in sources.json.
 # Pages: Settings → Pages → Source "GitHub Actions" (once). The site then stands at https://<owner>.github.io/<repo>/
 name: radar
 on:
@@ -43,6 +43,16 @@ jobs:
           KNMI_API_KEY: ${{ secrets.KNMI_API_KEY }}
           METEOFRANCE_APP_ID: ${{ secrets.METEOFRANCE_APP_ID }}
           AEMET_API_KEY: ${{ secrets.AEMET_API_KEY }}
+      # Rainbow.ai's world-wide radar mosaic (7 Nov): off until the secret RAINBOW_API_KEY exists; the variables steer layer, areas, cadence and the month's tile budget
+      - run: python3 rainbow.py --out site --frames 12
+        continue-on-error: true
+        env:
+          RAINBOW_API_KEY: ${{ secrets.RAINBOW_API_KEY }}
+          RAINBOW_LAYER: ${{ vars.RAINBOW_LAYER }}
+          RAINBOW_AREAS: ${{ vars.RAINBOW_AREAS }}
+          RAINBOW_CADENCE_MIN: ${{ vars.RAINBOW_CADENCE_MIN }}
+          RAINBOW_MONTHLY_TILES: ${{ vars.RAINBOW_MONTHLY_TILES }}
+          RAINBOW_COLOR: ${{ vars.RAINBOW_COLOR }}
       - run: python3 wms.py --out site --frames 12 --backfill 12
         continue-on-error: true
       - uses: actions/cache/save@v4

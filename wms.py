@@ -189,7 +189,7 @@ def write_sources(out, done):
     for d in RETIRED:                                                          # a retired source's folder goes, so the list never names it again
         if os.path.isdir(out + '/' + d):
             import shutil; shutil.rmtree(out + '/' + d, ignore_errors=True); log('retired folder removed:', d)
-    for d in sorted(os.listdir(out)):
+    for d in sorted(os.listdir(out), key=lambda n: (0 if n.startswith('rb-') else 1, n)):   # Rainbow.ai's world mosaic first = at the bottom; the national pictures lie on it (7 Nov)
         fj = out + '/' + d + '/frames.json'
         if not re.match(r'^[a-z0-9_-]{1,16}$', d) or not os.path.isfile(fj):
             continue
@@ -202,7 +202,7 @@ def write_sources(out, done):
             st = json.load(open(out + '/' + d + '/status.json'))
         except Exception:
             pass
-        lst.append({'id': d, 'name': NAMES.get(d, d.upper()), 'path': d, 'licence': j.get('licence', ''), 'source': j.get('source', ''), 'product': j.get('product', ''), 'ok': bool(st.get('ok', d in done)), 'updated': j.get('updated', '')})
+        lst.append({'id': d, 'name': NAMES.get(d) or j.get('name') or d.upper(), 'path': d, 'licence': j.get('licence', ''), 'source': j.get('source', ''), 'product': j.get('product', ''), 'ok': bool(st.get('ok', d in done)), 'updated': j.get('updated', '')})
     if os.path.exists(out + '/frames.json'):
         lst.append(ROOT_SOURCE)
     json.dump({'updated': dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), 'sources': lst}, open(out + '/sources.json', 'w'), indent=1)

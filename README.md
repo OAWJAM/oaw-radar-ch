@@ -46,3 +46,24 @@ KNMI (Netherlands) and Météo-France (France) hand their composites out only wi
 ## Retired sources (7 Nov)
 
 The Nordic composite carries the Swedish and Finnish radars, so the single sources `se` (SMHI) and `fi` (FMI) are retired — marked `retired` in their tables, skipped by the runs, their folders removed from the site (`RETIRED` in wms.py). Their code stays; `--only se` or `--only fi` runs one on purpose.
+
+
+## The world mosaic — Rainbow.ai (7 Nov, ready to switch on)
+
+`rainbow.py` fetches Rainbow.ai's radar mosaic as Web-Mercator XYZ tiles, stitches them, decodes the reflectivity (`color=dbz_u8`: the red channel carries dBZ + 32, bit 7 marks snow, a transparent pixel means no radar), paints the mosaic in this site's own scale and publishes it like every other source — as `rb-<area>/` with `frames.json` (`crs: EPSG:3857`, which the boards lay on their Mercator chart in one piece), `latest.png`, `status.json`, `coverage.json` (the reach's edge from the transparent pixels) and `usage.json` (the month's tile count). It lies at the bottom of the layer; the national pictures sit on it.
+
+**Off until the secret exists.** Settings → Secrets and variables → Actions → New repository secret → `RAINBOW_API_KEY` (the token from developer.rainbow.ai → Profile). Without it the step logs «no key — skipped» and the run stays green. The key travels in a header, never in a URL or a log.
+
+**Steered by repository variables** (the same page, the *Variables* tab; a missing one takes the default):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `RAINBOW_LAYER` | `radars` | `radars` = the radar mosaic (zoom 0–7) · `precip-global` = radar + satellite + nowcast, the oceans too (zoom 0–12) · `precip` |
+| `RAINBOW_AREAS` | `world:3` | a comma list of `<name>:<zoom>[:<x0>-<x1>:<y0>-<y1>]`; presets `world:3` (8 × 8 = 64 tiles, the whole world, ~20 km a pixel) and `europe:5` (8 × 6 = 48 tiles, 22.5 W – 67.5 E · 21.9 – 66.5 N, ~5 km a pixel); `world:3,europe:5` takes both |
+| `RAINBOW_CADENCE_MIN` | `30` | a new picture only when the newest one is at least this old (the snapshot's clock) — the lever on the cost |
+| `RAINBOW_MONTHLY_TILES` | `100000` | the month's tile budget; reached, the runs skip until the next month and `status.json` says so — never a surprise bill |
+| `RAINBOW_COLOR` | `dbz_u8` | the palette asked of the API; `dbz_u8` is decoded into this site's scale, a number (0–9) keeps Rainbow's own picture as it is |
+
+**What it costs** (Rainbow's tile price as read on 6 Nov: 30 000 tiles a month free, then 0.0002 $ a tile; the price list is theirs to change): one snapshot call plus the area's tiles per fetch. `world:3` at 30 min = 48 × 65 × 30 ≈ 94 000 tiles a month ≈ **13 $**; at 15 min ≈ 31 $; at 60 min ≈ 2 $. `europe:5` at 30 min ≈ 8 $, at 15 min ≈ 22 $. Both areas at 30 min ≈ 21 $. GitHub runs the workflow about once an hour under load (the schedule says ten minutes), so the real cadence — and the bill — is often below the variable; `usage.json` keeps the count.
+
+**First keyed run**: Actions → *probe* → Run workflow logs what each layer answers (the snapshot, a tile's size and mode, whether `dbz_u8` is served for the chosen layer). Should a layer not serve `dbz_u8`, set `RAINBOW_COLOR` to a palette number — the picture then comes as Rainbow paints it, the coverage edge still from its transparent pixels.
