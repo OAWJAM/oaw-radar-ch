@@ -441,6 +441,37 @@ def probe_norway():
     return 0
 
 
+def probe_dmi():
+    """DMI's radar data API (6 Nov, late): the composite items of the last two hours and one file's HDF5 tree with every attribute."""
+    import h5py
+    now = dt.datetime.now(dt.timezone.utc)
+    r = get(DMI + '/collections/composite/items', params={'limit': 5, 'datetime': (now - dt.timedelta(hours=2)).strftime('%Y-%m-%dT%H:%M:%SZ') + '/' + now.strftime('%Y-%m-%dT%H:%M:%SZ')})
+    j = r.json(); feats = j.get('features') or []
+    log('dmi items', len(feats), 'keys', list(j.keys()))
+    for ft in feats[:2]:
+        log('  feature', json.dumps({k: (v if k != 'geometry' else '…') for k, v in ft.items()})[:900])
+    items = dmi_items(1)
+    if not items:
+        return 0
+    blob = get(items[-1][1]).content
+    log('file', items[-1][0].isoformat(), len(blob), 'bytes', blob[:8])
+    def s(v):
+        if isinstance(v, bytes): return v.decode('utf-8', 'replace')
+        if isinstance(v, np.ndarray): return v.tolist() if v.size < 12 else ('array ' + str(v.shape))
+        return v
+    with h5py.File(io.BytesIO(blob), 'r') as f:
+        def walk(name, obj):
+            at = {k: s(v) for k, v in obj.attrs.items()}
+            extra = ''
+            if isinstance(obj, h5py.Dataset):
+                extra = ' dataset %s %s' % (obj.shape, obj.dtype)
+                if obj.ndim == 2 and obj.size < 5e6:
+                    arr = obj[...]; extra += ' min %s max %s' % (np.nanmin(arr), np.nanmax(arr))
+            log('   ', name, extra, json.dumps(at)[:600])
+        walk('/', f); f.visititems(walk)
+    return 0
+
+
 def probe_thredds():
     """MET Norway's THREDDS server (6 Nov, late): are the Nordic radar composites there as data — netCDF grids, no login — rather than
     the rendered pictures of api.met.no? The catalogues named by the esd R package and the WeaMyL notes; the newest file's headers."""
@@ -588,7 +619,7 @@ def main():
     a = ap.parse_args()
     only = [x for x in a.only.split(',') if x]
     if a.probe:
-        return probe() if (not only or 'se' in only) else (probe_austria() if 'at' in only else (probe_thredds() if 'thredds' in only else probe_norway()))
+        return probe() if (not only or 'se' in only) else (probe_austria() if 'at' in only else (probe_thredds() if 'thredds' in only else (probe_dmi() if 'dmi' in only else probe_norway())))
     os.makedirs(a.out, exist_ok=True)
     for src in SOURCES:
         if only and src['id'] not in only:
