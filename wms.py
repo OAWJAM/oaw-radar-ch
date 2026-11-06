@@ -17,7 +17,7 @@ UA = 'oaw-radar-ch converter (github actions; contact via the repository)'
 SOURCES = [
     {'id': 'de', 'name': 'Germany', 'source': 'DWD', 'licence': 'dl-de/by-2-0, Source: DWD', 'product': 'RADOLAN',
      'url': 'https://maps.dwd.de/geoserver/dwd/wms', 'layers': ['Radar_wn-analysis_1x1km_ger', 'dwd:Niederschlagsradar', 'dwd:RX-Produkt'],
-     'bbox': (3.5, 47.0, 16.5, 55.5), 'step_min': 5},
+     'bbox': (3.5, 47.0, 16.5, 55.5), 'step_min': 5, 'clear': True},
     {'id': 'fi', 'name': 'Finland', 'source': 'FMI', 'licence': 'CC BY 4.0, Source: FMI', 'product': 'RR',
      'url': 'https://openwms.fmi.fi/geoserver/Radar/wms', 'layers': ['radar_finland_cappi_rate', 'suomi_rr_eureffin', 'radar_finland_cappi_dbzh'],
      'bbox': (19.0, 59.0, 32.0, 70.5), 'step_min': 5},
@@ -128,7 +128,23 @@ def getmap(src, layer, when, size):
     if body[:4] != b'\x89PNG':
         exc = re.search(r'<ServiceException[^>]*>([^<]{1,300})', body.decode('utf-8', 'replace'))
         raise RuntimeError('not a picture: ' + (exc.group(1).strip() if exc else body[:120].decode('utf-8', 'replace')))
-    return body
+    return clear_background(body) if src.get('clear') else body
+
+
+def clear_background(png):
+    """DWD paints the radar's reach as a half-transparent grey field with a magenta rim — on a chart that is a grey lid over Germany. The grey
+    (r = g = b, not opaque) and the rim (magenta, and its blends with the grey) go transparent; the rain colours are opaque and stay."""
+    import io
+    import numpy as np
+    from PIL import Image
+    im = Image.open(io.BytesIO(png)).convert('RGBA'); a = np.array(im)
+    r, g, b, al = (a[..., i].astype(int) for i in range(4))
+    grey = (abs(r - g) < 4) & (abs(g - b) < 4) & (al < 255)
+    rim = (abs(r - 252) < 8) & (g < 12) & (abs(b - 255) < 8)
+    blend = (al < 232) & (r > 110) & (b > 110) & (g < r - 12) & (g < b - 12) & (abs(r - b) < 12)      # the rim's blends with the grey: purple-grey, never opaque
+    a[grey | rim | blend] = (0, 0, 0, 0)
+    out = io.BytesIO(); Image.fromarray(a, 'RGBA').save(out, 'PNG', optimize=True)
+    return out.getvalue()
 
 
 def write_frames(out, src, stamp, png, keep):
