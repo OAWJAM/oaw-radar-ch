@@ -145,7 +145,13 @@ def clear_background(png, with_mask=False):
     grey = (abs(r - g) < 4) & (abs(g - b) < 4) & (al < 255)
     rim = (abs(r - 252) < 8) & (g < 12) & (abs(b - 255) < 8)
     blend = (al < 232) & (r > 110) & (b > 110) & (g < r - 12) & (g < b - 12) & (abs(r - b) < 12)      # the rim's blends with the grey: purple-grey, never opaque
-    reach = ((grey & (al > 0)) | rim | blend | ((al == 255) & ~((r > 245) & (g > 245) & (b > 245))))   # the reach: the grey field (not the transparent outside, black too), its rim and the rain itself — never an opaque white outside (6 Nov, late — the coverage edge)
+    white = (r > 245) & (g > 245) & (b > 245)
+    reach = ((grey & (al > 0)) | rim | blend | ((al == 255) & ~white))                                 # the reach: the grey field (not the transparent outside, black too), its rim and the rain itself — never an opaque white outside (6 Nov, late — the coverage edge)
+    if with_mask:
+        n = a.shape[0] * a.shape[1]
+        print('   clear_background: grey %.3f rim %.3f blend %.3f opaque %.3f transparent %.3f white %.3f reach %.3f corners %s' % (
+            float(np.mean(grey & (al > 0))), float(np.mean(rim)), float(np.mean(blend)), float(np.mean(al == 255)), float(np.mean(al == 0)), float(np.mean(white & (al == 255))), float(np.mean(reach)),
+            [tuple(int(x) for x in a[yy, xx]) for yy, xx in ((0, 0), (0, a.shape[1] - 1), (a.shape[0] - 1, 0), (a.shape[0] // 2, a.shape[1] // 2))]), flush=True)
     a[grey | rim | blend] = (0, 0, 0, 0)
     out = io.BytesIO(); Image.fromarray(a, 'RGBA').save(out, 'PNG', optimize=True)
     return (out.getvalue(), reach) if with_mask else out.getvalue()
