@@ -31,11 +31,18 @@ SOURCES = [
      'bbox': (8.1, 45.5, 17.75, 49.5), 'step_min': 15, 'note': 'INCA precipitation analysis: the radar composite blended with the rain gauges (1 km, every 15 min), the nowcast\'s lead-0 step'},
     {'id': 'dk', 'kind': 'dmi', 'name': 'Denmark', 'source': 'DMI', 'licence': 'CC BY 4.0, Source: DMI', 'product': 'Radar composite', 'bbox': (4.5, 52.5, 20.5, 59.5), 'step_min': 5, 'step': 0.02,
      'note': 'DMI\'s radar composite from the open data API (no key since 2026 — «neither registration, nor API key are needed»), ODIM HDF5 every 5 min (6 Nov, late)'},
+    {'id': 'nl', 'kind': 'knmi', 'name': 'Netherlands', 'source': 'KNMI', 'licence': 'CC BY 4.0, Source: KNMI', 'product': 'Radar reflectivity composite', 'bbox': (0.0, 49.5, 10.5, 55.5), 'step_min': 5, 'step': 0.02,
+     'secret': 'KNMI_API_KEY', 'note': 'KNMI\'s radar reflectivity composite (RAD_NL25_PCP_NA, 1 km, every 5 min) from the Data Platform — the key is the repository secret KNMI_API_KEY (6 Nov, late)'},
+    {'id': 'fr', 'kind': 'meteofrance', 'name': 'France', 'source': 'M\u00e9t\u00e9o-France', 'licence': 'Licence Ouverte 2.0, Source: M\u00e9t\u00e9o-France', 'product': 'Radar mosaic', 'bbox': (-6.0, 41.0, 10.5, 51.5), 'step_min': 5, 'step': 0.02,
+     'secret': 'METEOFRANCE_APP_ID', 'note': 'M\u00e9t\u00e9o-France\'s radar mosaics from the Paquet Radar API — the application id is the repository secret METEOFRANCE_APP_ID (6 Nov, late; the archive\'s members are logged on the first run)'},
     {'id': 'no', 'kind': 'nordic', 'name': 'Norway (Nordic composite)', 'source': 'MET Norway', 'licence': 'CC BY 4.0, Source: MET Norway', 'product': 'Nordic radar composite (pcappi 0 dBZ)',
      'bbox': (0.5, 54.0, 38.0, 72.0), 'step_min': 5, 'step': 0.02,
      'note': 'The Nordic composite from MET Norway\'s THREDDS server — the radars of Norway, Sweden and Finland on one 1 km Lambert grid every 5 min (6 Nov, late: data, not the rendered picture of api.met.no)'},
 ]
 DMI = 'https://opendataapi.dmi.dk/v1/radardata'
+KNMI = 'https://api.dataplatform.knmi.nl/open-data/v1/datasets/radar_reflectivity_composites/versions/2.0/files'
+MF_TOKEN = 'https://portail-api.meteofrance.fr/token'
+MF_PAQUET = 'https://public-api.meteofrance.fr/public/DPPaquetRadar/v1/mosaique/paquet'
 THREDDS = 'https://thredds.met.no/thredds'
 NORDIC_CAT = THREDDS + '/catalog/remotesensing/reflectivity-nordic/latest/catalog.html'
 
@@ -335,6 +342,140 @@ def run_dmi(src, a):
     return got
 
 
+def knmi_read(blob):
+    """KNMI's radar HDF5 (not ODIM): image1/image_data (uint8, 255 = no data), the calibration formula GEO = a * PV + b (dBZ), the corners and the
+    polar-stereographic proj4 under geographic/ — → (rate mm/h with NaN outside, frame for reproject_grid)."""
+    import h5py
+    with h5py.File(io.BytesIO(blob), 'r') as f:
+        raw = f['image1/image_data'][...]
+        cal = dict(f['image1/calibration'].attrs) if 'image1/calibration' in f else {}
+        geo = dict(f['geographic'].attrs) if 'geographic' in f else {}
+        mp = dict(f['geographic/map_projection'].attrs) if 'geographic/map_projection' in f else {}
+    def s(v):
+        v = v[0] if isinstance(v, np.ndarray) and v.size == 1 else v
+        return v.decode('utf-8', 'replace') if isinstance(v, bytes) else v
+    formula = str(s(cal.get('calibration_formulas', 'GEO = 0.500000 * PV + -31.500000')))
+    m = re.search(r'GEO\s*=\s*([-\d.]+)\s*\*\s*PV\s*\+\s*([-\d.]+)', formula)
+    a_, b_ = (float(m.group(1)), float(m.group(2))) if m else (0.5, -31.5)
+    miss = cal.get('calibration_missing_data'); miss = int(np.ravel(miss)[0]) if miss is not None else 255
+    dbz = raw.astype(np.float32) * a_ + b_
+    rate = odim_rate(dbz, 'DBZH')
+    rate[raw == miss] = np.nan
+    proj4 = str(s(mp.get('projection_proj4_params', '+proj=stere +lat_0=90 +lon_0=0 +lat_ts=60 +a=6378.14 +b=6356.75 +x_0=0 y_0=0'))).replace('+a=6378.14 ', '+a=6378140 ').replace('+b=6356.75 ', '+b=6356750 ')
+    corners = np.ravel(geo.get('geo_product_corners', [])).astype(float)
+    px = float(np.ravel(geo.get('geo_pixel_size_x', [1.0]))[0]); py = float(np.ravel(geo.get('geo_pixel_size_y', [-1.0]))[0])
+    unit = 1000.0 if abs(px) < 50 else 1.0                                                            # KNMI gives the pixel size in km
+    tr = Transformer.from_crs(CRS.from_epsg(4326), CRS.from_user_input(proj4), always_xy=True)
+    if corners.size >= 8:
+        xs_, ys_ = tr.transform(corners[0::2], corners[1::2])
+        x0, y0 = float(np.min(xs_)), float(np.max(ys_))                                               # the north-west corner
+    else:
+        x0 = float(np.ravel(geo.get('geo_column_offset', [0]))[0]) * px * unit; y0 = -float(np.ravel(geo.get('geo_row_offset', [0]))[0]) * abs(py) * unit
+    frame = {'x0': x0, 'y0': y0, 'xs': abs(px) * unit, 'ys': abs(py) * unit, 'crs': proj4}
+    return rate, frame, {'formula': formula, 'shape': raw.shape, 'proj4': proj4, 'corners': corners[:8].tolist()}
+
+
+def knmi_files(key, n=12):
+    r = requests.get(KNMI, params={'maxKeys': max(1, n), 'orderBy': 'created', 'sorting': 'desc'}, headers={'Authorization': key, 'User-Agent': UA}, timeout=60)
+    r.raise_for_status()
+    out = []
+    for f in (r.json().get('files') or []):
+        name = str(f.get('filename', ''))
+        m = re.search(r'_(\d{12})\.h5$', name)
+        if m:
+            t = m.group(1)
+            out.append((parse_time(t[:4] + '-' + t[4:6] + '-' + t[6:8] + 'T' + t[8:10] + ':' + t[10:12] + 'Z'), name))
+    return sorted(out)[-n:]
+
+
+def run_knmi(src, a):
+    key = os.environ.get(src['secret'], '').strip()
+    if not key:
+        log(src['id'], 'skipped — no secret', src['secret']); return 0
+    d = a.out + '/' + src['id']; step = src.get('step', a.step)
+    files = knmi_files(key, max(1, a.backfill))
+    if not files:
+        raise RuntimeError('no file listed')
+    todo = [(t, nm) for t, nm in files if not os.path.exists(d + '/frames/' + t.strftime('%Y%m%d%H%M') + '.png')]
+    if not todo:
+        log(src['id'], 'already there', files[-1][0].strftime('%Y%m%d%H%M')); return 0
+    got = 0
+    for stamp, name in todo:
+        try:
+            u = requests.get(KNMI + '/' + name + '/url', headers={'Authorization': key, 'User-Agent': UA}, timeout=60); u.raise_for_status()
+            blob = requests.get(u.json()['temporaryDownloadUrl'], headers={'User-Agent': UA}, timeout=120).content
+            rate, frame, info = knmi_read(blob)
+            if got == 0:
+                log(src['id'], 'file', name, len(blob), 'bytes', info, 'frame', {k: (round(v, 1) if isinstance(v, float) else v) for k, v in frame.items()})
+            field, size = reproject_grid(rate, frame, src['bbox'], step)
+            field[np.isfinite(field) & (field < 0.1)] = 0.0
+            img = convert.paint(field)
+            wet = float(np.nanmean(field >= 0.1)) if np.isfinite(field).any() else 0.0
+            if convert.coverage_stale(d, stamp):
+                convert.write_coverage(d, np.isfinite(field), src['bbox'], step, src['source'])
+            k, n = write_frames(a.out, src, stamp, img, a.frames, {'wet_share': round(wet, 4), 'width': size[0], 'height': size[1], 'step_deg': step, 'url': KNMI + '/' + name, 'note': src.get('note', '')})
+            log('  done', k, size, 'wet share', round(wet, 4), 'frames', n, 'nodata share', round(float(np.mean(~np.isfinite(field))), 3)); got += 1
+        except Exception as e:
+            log('  ', stamp.strftime('%H:%MZ'), 'failed:', e)
+    if not got:
+        raise RuntimeError('no picture converted')
+    return got
+
+
+def mf_token(app_id):
+    r = requests.post(MF_TOKEN, data={'grant_type': 'client_credentials'}, headers={'Authorization': 'Basic ' + app_id, 'User-Agent': UA}, timeout=60)
+    r.raise_for_status()
+    return str(r.json().get('access_token', ''))
+
+
+def run_meteofrance(src, a):
+    """Météo-France's Paquet Radar: the last quarter hour's mosaics as a zip — the members are logged on every run until the reader knows them
+    (the first pass with a key tells the format); ODIM HDF5 and GeoTIFF members are tried."""
+    import zipfile
+    app = os.environ.get(src['secret'], '').strip()
+    if not app:
+        log(src['id'], 'skipped — no secret', src['secret']); return 0
+    d = a.out + '/' + src['id']; step = src.get('step', a.step)
+    tok = mf_token(app)
+    if not tok:
+        raise RuntimeError('no token from the portal')
+    r = requests.get(MF_PAQUET, headers={'Authorization': 'Bearer ' + tok, 'Accept': 'application/zip, */*', 'User-Agent': UA}, timeout=180)
+    log(src['id'], 'paquet', r.status_code, r.headers.get('content-type'), len(r.content), 'bytes')
+    r.raise_for_status()
+    z = zipfile.ZipFile(io.BytesIO(r.content))
+    names = z.namelist()
+    log(src['id'], 'members', len(names), names[:40])
+    got = 0
+    for name in names:
+        low = name.lower()
+        try:
+            blob = z.read(name)
+            if low.endswith(('.h5', '.hdf5', '.hdf')):
+                rate, grid, scale, quantity = convert.read_odim(blob)
+                rate = odim_rate(rate, quantity)
+                field, _, size = convert.reproject(rate, grid, src['bbox'], step)
+                m = re.search(r'(\d{8})[T_]?(\d{4})', name); stamp = parse_time(m.group(1)[:4] + '-' + m.group(1)[4:6] + '-' + m.group(1)[6:8] + 'T' + m.group(2)[:2] + ':' + m.group(2)[2:] + 'Z') if m else dt.datetime.now(dt.timezone.utc).replace(second=0, microsecond=0)
+            elif low.endswith(('.tif', '.tiff')):
+                data, frame = read_geotiff(blob)
+                rate = data.astype(np.float32); rate[rate < 0] = np.nan
+                field, size = reproject_grid(rate, frame, src['bbox'], step)
+                m = re.search(r'(\d{8})[T_]?(\d{4})', name); stamp = parse_time(m.group(1)[:4] + '-' + m.group(1)[4:6] + '-' + m.group(1)[6:8] + 'T' + m.group(2)[:2] + ':' + m.group(2)[2:] + 'Z') if m else dt.datetime.now(dt.timezone.utc).replace(second=0, microsecond=0)
+            else:
+                log('  member', name, len(blob), 'bytes — not read yet (format unknown to the reader)'); continue
+            if os.path.exists(d + '/frames/' + stamp.strftime('%Y%m%d%H%M') + '.png'):
+                continue
+            field[np.isfinite(field) & (field < 0.1)] = 0.0
+            img = convert.paint(field)
+            wet = float(np.nanmean(field >= 0.1)) if np.isfinite(field).any() else 0.0
+            k, n = write_frames(a.out, src, stamp, img, a.frames, {'wet_share': round(wet, 4), 'width': size[0], 'height': size[1], 'step_deg': step, 'url': MF_PAQUET, 'note': src.get('note', ''), 'member': name})
+            log('  done', k, size, 'wet share', round(wet, 4), 'frames', n, 'from', name); got += 1
+        except Exception as e:
+            log('  member', name, 'failed:', e)
+    if not got:
+        raise RuntimeError('no mosaic read from the archive — the members are in the log')
+    return got
+
+
 def nordic_files(n=12):
     """The newest n files of the Nordic composite in the THREDDS folder latest/ (two days of 5-min files), oldest first: [(stamp, path)]."""
     r = get(NORDIC_CAT)
@@ -626,9 +767,9 @@ def main():
         if only and src['id'] not in only:
             continue
         d = a.out + '/' + src['id']; os.makedirs(d, exist_ok=True)
-        if src.get('kind') in ('geosphere', 'nordic', 'dmi'):
+        if src.get('kind') in ('geosphere', 'nordic', 'dmi', 'knmi', 'meteofrance'):
             try:
-                {'geosphere': run_geosphere, 'nordic': run_nordic, 'dmi': run_dmi}[src['kind']](src, a)
+                {'geosphere': run_geosphere, 'nordic': run_nordic, 'dmi': run_dmi, 'knmi': run_knmi, 'meteofrance': run_meteofrance}[src['kind']](src, a)
             except Exception as e:
                 log(src['id'], 'failed:', e)
                 json.dump({'ok': False, 'error': str(e)[:300], 'at': dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}, open(d + '/status.json', 'w'), indent=1)

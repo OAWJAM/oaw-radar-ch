@@ -39,6 +39,10 @@ jobs:
       # the other national radars (keyless WMS: DWD, FMI) through the same site; a failing service never stops the Swiss picture
       - run: python3 grids.py --out site --frames 12 --backfill 12
         continue-on-error: true
+        env:                                    # the keyed radars (6 Nov, late): a source without its secret is skipped; the keys live here, never in the boards
+          KNMI_API_KEY: ${{ secrets.KNMI_API_KEY }}
+          METEOFRANCE_APP_ID: ${{ secrets.METEOFRANCE_APP_ID }}
+          AEMET_API_KEY: ${{ secrets.AEMET_API_KEY }}
       - run: python3 wms.py --out site --frames 12 --backfill 12
         continue-on-error: true
       - uses: actions/cache/save@v4

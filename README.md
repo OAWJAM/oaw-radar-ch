@@ -36,3 +36,8 @@ python3 convert.py --file some.h5 --out site
 ## The coverage edge (6 Nov, late)
 
 Beside every `frames.json` that can say where its radars see, a `coverage.json` carries the edge of that reach as rings of `[lon, lat]` (traced at a tenth of a degree from the pictures' no-data mask: MeteoSwiss' 255, SMHI's 255, the Nordic composite's `is_nodata`, the grey reach DWD paints under its rain). The boards draw the rings as thin lines under the pictures, so a dry area inside the line reads as «no rain», one outside as «no radar». A source whose picture carries no such mark (FMI's WMS, the INCA analysis) writes none.
+
+
+## The keyed radars (6 Nov, late)
+
+KNMI (Netherlands) and Météo-France (France) hand their composites out only with a free key. The keys are **repository secrets** — Settings → Secrets and variables → Actions — named `KNMI_API_KEY` (the Data Platform key) and `METEOFRANCE_APP_ID` (the portal's application id, the Basic value from «Générer Token»); `AEMET_API_KEY` is reserved for Spain. `grids.py` reads them from the environment and skips a source whose secret is missing, so the run stays green without them. Denmark needs none since DMI opened its API; the Nordic composite needs none either.
