@@ -213,16 +213,16 @@ def probe_austria():
             except Exception as e:
                 log('metadata', mode, rid, 'failed:', e)
     # one small grid ask, netcdf, the newest analysis
-    for mode in ('forecast', 'current'):
+    for mode in ('forecast',):
         try:
-            r = requests.get(GEO + '/grid/%s/nowcast-v1-15min-1km' % mode, params={'parameters': 'RR', 'bbox': '47.0,12.0,47.5,12.5', 'output_format': 'netcdf', 'forecast_offset': 0}, headers={'User-Agent': UA}, timeout=90)
+            r = requests.get(GEO + '/grid/%s/nowcast-v1-15min-1km' % mode, params={'parameters': 'rr', 'bbox': '47.0,12.0,47.5,12.5', 'output_format': 'netcdf'}, headers={'User-Agent': UA}, timeout=90)
             log('grid ask', mode, r.status_code, r.headers.get('content-type'), len(r.content), r.text[:200] if r.status_code != 200 else '')
-            if r.status_code == 200 and 'netcdf' in str(r.headers.get('content-type', '')).lower() or r.content[:4] in (b'CDF\x01', b'CDF\x02', b'\x89HDF'):
+            if r.status_code == 200 and (r.content[:3] == b'CDF' or r.content[:4] == b'\x89HDF' or 'netcdf' in str(r.headers.get('content-type', '')).lower()):
                 try:
                     import netCDF4
                     ds = netCDF4.Dataset('inmemory.nc', memory=r.content)
                     log('   variables', {k: (v.dimensions, v.shape) for k, v in ds.variables.items()})
-                    for k in ('lat', 'lon', 'x', 'y', 'time', 'RR'):
+                    for k in ('lat', 'lon', 'x', 'y', 'time', 'rr'):
                         if k in ds.variables:
                             v = ds.variables[k][:]; log('   ', k, getattr(v, 'shape', None), float(np.nanmin(v)) if v.size else None, float(np.nanmax(v)) if v.size else None, dict(ds.variables[k].__dict__))
                     log('   global', {k: str(v)[:80] for k, v in ds.__dict__.items()})
