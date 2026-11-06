@@ -3,7 +3,7 @@
 SWEREF99 TM, EPSG:3006) and GeoSphere Austria's INCA precipitation analysis (a NetCDF on the 1 km Austria Lambert grid, EPSG:31287) —
 reprojected onto plain latitude/longitude and painted with the same scale as the Swiss picture, under <out>/<id>/ like the WMS sources.
 
-  python3 grids.py [--out site] [--frames 12] [--only se,at] [--backfill 6] [--probe]
+  python3 grids.py [--out site] [--frames 12] [--only se,at] [--backfill 12] [--probe]
 
 Sources (keyless, open data):
   SMHI       https://opendata-download-radar.smhi.se/api   version/latest/area/sweden/product/comp — a PNG and a GeoTIFF every five minutes;
@@ -42,39 +42,41 @@ def get(url, **kw):
     return r
 
 
-def smhi_latest():
-    """The newest GeoTIFF of the composite: (stamp, href), or None. The product's metadata names the last files with their formats."""
-    j = get(SMHI).json()
-    files = []
-    for key in ('lastFiles', 'files'):
-        for f in (j.get(key) or []):
+def smhi_files(n=12):
+    """The newest n GeoTIFFs of the composite, oldest first: [(stamp, href)]. The product's metadata names only the last file or two, so the
+    day's listing (?format=tif; yesterday's too around midnight) is read for the rest."""
+    files = {}
+    def take(lst):
+        for f in lst or []:
             if not isinstance(f, dict):
                 continue
             valid = f.get('valid') or f.get('validTime') or ''
             for fm in (f.get('formats') or []):
-                if str(fm.get('key', '')).lower() in ('tif', 'tiff', 'geotiff') and fm.get('link'):
-                    files.append((str(valid), fm['link']))
-    if not files:
-        # the day's listing as a fallback: today's folder, ?format=tif
-        now = dt.datetime.now(dt.timezone.utc)
-        for day in (now, now - dt.timedelta(days=1)):
-            try:
-                jd = get(SMHI + day.strftime('/%Y/%m/%d'), params={'format': 'tif'}).json()
-            except Exception as e:
-                log('day listing not read:', e); continue
-            for f in (jd.get('files') or []):
-                valid = f.get('valid') or ''
-                for fm in (f.get('formats') or []):
-                    if str(fm.get('key', '')).lower() in ('tif', 'tiff') and fm.get('link'):
-                        files.append((str(valid), fm['link']))
-            if files:
-                break
-    if not files:
-        return None
-    files.sort()
-    valid, href = files[-1]
-    stamp = parse_time(valid) if valid else dt.datetime.now(dt.timezone.utc).replace(second=0, microsecond=0)
-    return stamp, href
+                if str(fm.get('key', '')).lower() in ('tif', 'tiff', 'geotiff') and fm.get('link') and valid:
+                    try:
+                        files[parse_time(str(valid))] = fm['link']
+                    except Exception:
+                        pass
+    try:
+        j = get(SMHI).json()
+        take(j.get('lastFiles')); take(j.get('files'))
+    except Exception as e:
+        log('smhi metadata not read:', e)
+    now = dt.datetime.now(dt.timezone.utc)
+    for day in (now, now - dt.timedelta(days=1)):
+        if len([t for t in files if t >= now - dt.timedelta(hours=2)]) >= n:
+            break
+        try:
+            take(get(SMHI + day.strftime('/%Y/%m/%d'), params={'format': 'tif'}).json().get('files'))
+        except Exception as e:
+            log('smhi day listing not read:', e)
+    return [(t, files[t]) for t in sorted(files)][-n:]
+
+
+def smhi_latest():
+    """The newest GeoTIFF of the composite: (stamp, href), or None."""
+    lst = smhi_files(1)
+    return lst[-1] if lst else None
 
 
 def parse_time(s):
@@ -387,7 +389,7 @@ def main():
     ap.add_argument('--out', default='site'); ap.add_argument('--frames', type=int, default=12)
     ap.add_argument('--step', type=float, default=0.01); ap.add_argument('--only', default='')
     ap.add_argument('--probe', action='store_true'); ap.add_argument('--file', help='a local GeoTIFF instead of the download (for a try)')
-    ap.add_argument('--backfill', type=int, default=6, help='GeoSphere: how many of the runs on offer to look at per pass (newest first)')
+    ap.add_argument('--backfill', type=int, default=12, help='how many of the newest pictures (SMHI) or runs (GeoSphere, at most six on offer) to look at per pass')
     a = ap.parse_args()
     only = [x for x in a.only.split(',') if x]
     if a.probe:
@@ -407,23 +409,30 @@ def main():
         try:
             if a.file:
                 blob = open(a.file, 'rb').read(); stamp = dt.datetime.now(dt.timezone.utc).replace(second=0, microsecond=0); href = a.file
+                todo = [(stamp, href)]
             else:
-                found = smhi_latest()
-                if not found:
-                    raise RuntimeError('no file named by the service')
-                stamp, href = found
-                key = stamp.strftime('%Y%m%d%H%M')
-                if os.path.exists(d + '/frames/' + key + '.png'):
-                    log(src['id'], 'already there', key); continue
-                blob = get(href).content
-            log(src['id'], 'file', href, len(blob), 'bytes, time', stamp.isoformat())
-            data, frame = read_geotiff(blob)
-            rate = smhi_rate(data)
-            field, size = reproject_grid(rate, frame, src['bbox'], a.step)
-            img = convert.paint(field)
-            wet = float(np.nanmean(field >= 0.1)) if np.isfinite(field).any() else 0.0
-            k, n = write_frames(a.out, src, stamp, img, a.frames, {'wet_share': round(wet, 4), 'width': size[0], 'height': size[1], 'step_deg': a.step, 'url': href})
-            log('  done', k, size, 'wet share', round(wet, 4), 'frames', n)
+                todo = [(t, h) for t, h in smhi_files(max(1, a.backfill)) if not os.path.exists(d + '/frames/' + t.strftime('%Y%m%d%H%M') + '.png')]
+                if not todo:
+                    lst = smhi_files(1)
+                    if not lst:
+                        raise RuntimeError('no file named by the service')
+                    log(src['id'], 'already there', lst[-1][0].strftime('%Y%m%d%H%M')); continue
+            got = 0
+            for stamp, href in todo:                                          # oldest first, so latest.png ends with the newest
+                try:
+                    blob = open(href, 'rb').read() if a.file else get(href).content
+                    log(src['id'], 'file', href, len(blob), 'bytes, time', stamp.isoformat())
+                    data, frame = read_geotiff(blob)
+                    rate = smhi_rate(data)
+                    field, size = reproject_grid(rate, frame, src['bbox'], a.step)
+                    img = convert.paint(field)
+                    wet = float(np.nanmean(field >= 0.1)) if np.isfinite(field).any() else 0.0
+                    k, n = write_frames(a.out, src, stamp, img, a.frames, {'wet_share': round(wet, 4), 'width': size[0], 'height': size[1], 'step_deg': a.step, 'url': href})
+                    log('  done', k, size, 'wet share', round(wet, 4), 'frames', n); got += 1
+                except Exception as e:
+                    log('  ', stamp.strftime('%H:%MZ'), 'failed:', e)
+            if not got:
+                raise RuntimeError('no picture converted')
         except Exception as e:
             log(src['id'], 'failed:', e)
             json.dump({'ok': False, 'error': str(e)[:300], 'at': dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}, open(d + '/status.json', 'w'), indent=1)
