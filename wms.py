@@ -19,7 +19,7 @@ SOURCES = [
      'url': 'https://maps.dwd.de/geoserver/dwd/wms', 'layers': ['Radar_wn-analysis_1x1km_ger', 'dwd:Niederschlagsradar', 'dwd:RX-Produkt'],
      'bbox': (3.5, 47.0, 16.5, 55.5), 'step_min': 5},
     {'id': 'fi', 'name': 'Finland', 'source': 'FMI', 'licence': 'CC BY 4.0, Source: FMI', 'product': 'RR',
-     'url': 'https://openwms.fmi.fi/geoserver/Radar/wms', 'layers': ['radar_finland_cappi_rate', 'radar_finland_cappi_dbzh', 'Radar:suomi_rr_eureffin'],
+     'url': 'https://openwms.fmi.fi/geoserver/Radar/wms', 'layers': ['radar_finland_cappi_rate', 'suomi_rr_eureffin', 'radar_finland_cappi_dbzh'],
      'bbox': (19.0, 59.0, 32.0, 70.5), 'step_min': 5},
 ]
 ROOT_SOURCE = {'id': 'ch', 'name': 'Switzerland', 'path': '', 'licence': 'CC-BY, Source: MeteoSwiss', 'source': 'MeteoSwiss', 'product': 'RZC'}
