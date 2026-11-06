@@ -214,10 +214,10 @@ def main():
     ap.add_argument('--step', type=float, default=0.01); ap.add_argument('--only', default='')
     ap.add_argument('--probe', action='store_true'); ap.add_argument('--file', help='a local GeoTIFF instead of the download (for a try)')
     a = ap.parse_args()
+    only = [x for x in a.only.split(',') if x]
     if a.probe:
         return probe() if (not only or 'se' in only) else probe_norway()
     os.makedirs(a.out, exist_ok=True)
-    only = [x for x in a.only.split(',') if x]
     for src in SOURCES:
         if only and src['id'] not in only:
             continue
