@@ -29,7 +29,12 @@ SOURCES = [
     {'id': 'se', 'kind': 'smhi', 'name': 'Sweden', 'source': 'SMHI', 'licence': 'CC BY 4.0, Source: SMHI', 'product': 'COMP', 'bbox': (9.5, 54.5, 25.0, 69.5), 'step_min': 5},
     {'id': 'at', 'kind': 'geosphere', 'name': 'Austria', 'source': 'GeoSphere Austria', 'licence': 'CC BY 4.0, Source: GeoSphere Austria', 'product': 'INCA analysis',
      'bbox': (8.1, 45.5, 17.75, 49.5), 'step_min': 15, 'note': 'INCA precipitation analysis: the radar composite blended with the rain gauges (1 km, every 15 min), the nowcast\'s lead-0 step'},
+    {'id': 'no', 'kind': 'nordic', 'name': 'Norway (Nordic composite)', 'source': 'MET Norway', 'licence': 'CC BY 4.0, Source: MET Norway', 'product': 'Nordic radar composite (pcappi 0 dBZ)',
+     'bbox': (0.5, 54.0, 38.0, 72.0), 'step_min': 5, 'step': 0.02,
+     'note': 'The Nordic composite from MET Norway\'s THREDDS server — the radars of Norway, Sweden and Finland on one 1 km Lambert grid every 5 min (6 Nov, late: data, not the rendered picture of api.met.no)'},
 ]
+THREDDS = 'https://thredds.met.no/thredds'
+NORDIC_CAT = THREDDS + '/catalog/remotesensing/reflectivity-nordic/latest/catalog.html'
 
 
 def log(*a):
@@ -140,7 +145,7 @@ def reproject_grid(rate, frame, bbox, step):
     lons = W + (np.arange(nx) + 0.5) * step
     lats = N - (np.arange(ny) + 0.5) * step
     LON, LAT = np.meshgrid(lons, lats)
-    to_grid = Transformer.from_crs(CRS.from_epsg(4326), CRS.from_epsg(frame['epsg']), always_xy=True)
+    to_grid = Transformer.from_crs(CRS.from_epsg(4326), CRS.from_user_input(frame['crs']) if frame.get('crs') else CRS.from_epsg(frame['epsg']), always_xy=True)   # an EPSG code or a proj4 string (the Nordic LCC, 6 Nov)
     X, Y = to_grid.transform(LON, LAT)
     col = np.floor((X - frame['x0']) / frame['xs']).astype(np.int64)
     row = np.floor((frame['y0'] - Y) / frame['ys']).astype(np.int64)
@@ -262,6 +267,85 @@ def run_geosphere(src, a):
         n += 1
     if n == 0:
         raise RuntimeError('no analysis step read')
+
+
+def nordic_files(n=12):
+    """The newest n files of the Nordic composite in the THREDDS folder latest/ (two days of 5-min files), oldest first: [(stamp, path)]."""
+    r = get(NORDIC_CAT)
+    out = []
+    for f in sorted(set(re.findall(r'dataset=([^"&]+\.nc)', r.text))):
+        m = re.search(r'\.(\d{8})T(\d{4})\d{0,2}Z\.nc$', f)
+        if m:
+            d, t = m.group(1), m.group(2)
+            try:
+                out.append((parse_time(d[:4] + '-' + d[4:6] + '-' + d[6:8] + 'T' + t[:2] + ':' + t[2:] + 'Z'), f))
+            except Exception:
+                pass
+    return sorted(out)[-n:]
+
+
+def nordic_read(path, stride=2):
+    """One composite file through OPeNDAP, every stride-th cell: (rate mm/h with NaN where no radar sees, frame with the proj4 string, info)."""
+    import netCDF4
+    ds = netCDF4.Dataset(THREDDS + '/dodsC/' + path)
+    try:
+        xc = np.array(ds['Xc'][::stride], dtype=np.float64); yc = np.array(ds['Yc'][::stride], dtype=np.float64)
+        v = ds['lwe_precipitation_rate']
+        units = str(getattr(v, 'units', '')); fill = getattr(v, '_FillValue', None)
+        rate = v[0, ::stride, ::stride]
+        rate = np.array(rate.filled(np.nan) if np.ma.isMaskedArray(rate) else rate, dtype=np.float32)
+        nod = None
+        if 'is_nodata' in ds.variables:
+            nd = ds['is_nodata'][0, ::stride, ::stride]
+            nod = np.array(nd.filled(0) if np.ma.isMaskedArray(nd) else nd)
+        pm = ds['projection_lambert'] if 'projection_lambert' in ds.variables else None
+        proj4 = str(getattr(pm, 'proj4', '')) if pm is not None else ''
+        nodes = str(getattr(ds['mosaic_info'], 'nodes', ''))[:200] if 'mosaic_info' in ds.variables else ''
+    finally:
+        ds.close()
+    if not proj4:
+        proj4 = '+proj=lcc +lat_0=63 +lon_0=15 +lat_1=63 +lat_2=63 +no_defs +R=6.371e+06'
+    if fill is not None:
+        rate[rate == np.float32(fill)] = np.nan
+    if nod is not None:
+        rate[nod != 0] = np.nan
+    if 's-1' in units or 's^-1' in units:                               # kg m-2 s-1 → mm/h
+        rate = rate * 3600.0
+    rate[rate < 0] = np.nan
+    if yc[0] < yc[-1]:                                                  # south first in the file: row 0 must be north
+        rate = rate[::-1]; yc = yc[::-1]
+    xs = float(abs(xc[1] - xc[0])); ys = float(abs(yc[0] - yc[1]))
+    frame = {'x0': float(xc[0]) - xs / 2, 'y0': float(yc[0]) + ys / 2, 'xs': xs, 'ys': ys, 'crs': proj4}
+    return rate, frame, {'units': units, 'nodes': nodes, 'shape': rate.shape, 'nodata_share': round(float(np.mean(~np.isfinite(rate))), 3)}
+
+
+def run_nordic(src, a):
+    """MET Norway's Nordic composite: the newest files not yet converted (--backfill), oldest first; a file that fails is logged, the rest go on."""
+    d = a.out + '/' + src['id']
+    step = src.get('step', a.step)
+    todo = [(t, f) for t, f in nordic_files(max(1, a.backfill)) if not os.path.exists(d + '/frames/' + t.strftime('%Y%m%d%H%M') + '.png')]
+    if not todo:
+        lst = nordic_files(1)
+        if not lst:
+            raise RuntimeError('no file in the THREDDS folder')
+        log(src['id'], 'already there', lst[-1][0].strftime('%Y%m%d%H%M')); return 0
+    got = 0
+    for stamp, path in todo:
+        try:
+            rate, frame, info = nordic_read(path)
+            if got == 0:
+                log(src['id'], 'file', path.split('/')[-1], info, 'frame', {k: (round(v, 1) if isinstance(v, float) else v) for k, v in frame.items()})
+            field, size = reproject_grid(rate, frame, src['bbox'], step)
+            field[np.isfinite(field) & (field < 0.1)] = 0.0
+            img = convert.paint(field)
+            wet = float(np.nanmean(field >= 0.1)) if np.isfinite(field).any() else 0.0
+            k, n = write_frames(a.out, src, stamp, img, a.frames, {'wet_share': round(wet, 4), 'width': size[0], 'height': size[1], 'step_deg': step, 'url': THREDDS + '/dodsC/' + path, 'note': src.get('note', ''), 'radars': info.get('nodes', '')})
+            log('  done', k, size, 'wet share', round(wet, 4), 'frames', n, 'nodata share', info['nodata_share']); got += 1
+        except Exception as e:
+            log('  ', stamp.strftime('%H:%MZ'), 'failed:', e)
+    if not got:
+        raise RuntimeError('no picture converted')
+    return got
 
 
 def probe_norway():
@@ -442,9 +526,9 @@ def main():
         if only and src['id'] not in only:
             continue
         d = a.out + '/' + src['id']; os.makedirs(d, exist_ok=True)
-        if src.get('kind') == 'geosphere':
+        if src.get('kind') in ('geosphere', 'nordic'):
             try:
-                run_geosphere(src, a)
+                (run_geosphere if src['kind'] == 'geosphere' else run_nordic)(src, a)
             except Exception as e:
                 log(src['id'], 'failed:', e)
                 json.dump({'ok': False, 'error': str(e)[:300], 'at': dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}, open(d + '/status.json', 'w'), indent=1)
