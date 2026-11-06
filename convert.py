@@ -78,13 +78,28 @@ def read_odim(blob: bytes):
         d = f['dataset1/data1']
         raw = d['data'][...]
         what = dict(d['what'].attrs) if 'what' in d else {}
+        dattrs = dict(d.attrs)
         dwhat = dict(f['dataset1/what'].attrs) if 'what' in f['dataset1'] else {}
-        top = dict(f['what'].attrs)
+        top = dict(f['what'].attrs) if 'what' in f else {}
     def s(v):
         return v.decode() if isinstance(v, bytes) else v
-    gain = float(what.get('gain', 1.0)); offset = float(what.get('offset', 0.0))
-    nodata = what.get('nodata'); undetect = what.get('undetect')
-    quantity = s(what.get('quantity', dwhat.get('quantity', '')))
+    def num(v, dflt=None):                                        # an attribute as a number — DMI writes one-element arrays (6 Nov, late)
+        if v is None:
+            return dflt
+        try:
+            return float(np.ravel(v)[0])
+        except Exception:
+            return dflt
+    for k in ('gain', 'offset', 'nodata', 'undetect', 'quantity'):   # DMI keeps gain/offset/nodata/undetect at the top-level what, the quantity on data1 itself
+        if k not in what and k in dwhat:
+            what[k] = dwhat[k]
+        if k not in what and k in top:
+            what[k] = top[k]
+    if 'quantity' not in what and 'quantity' in dattrs:
+        what['quantity'] = dattrs['quantity']
+    gain = num(what.get('gain'), 1.0); offset = num(what.get('offset'), 0.0)
+    nodata = num(what.get('nodata')); undetect = num(what.get('undetect'))
+    quantity = s(what.get('quantity', ''))
     log('odim: quantity', quantity, 'dtype', raw.dtype, 'shape', raw.shape, 'gain', gain, 'offset', offset, 'nodata', nodata, 'undetect', undetect,
         'product', s(dwhat.get('product', '')), 'date', s(top.get('date', '')), s(top.get('time', '')))
     if raw.dtype == np.uint8 and gain == 1.0 and offset == 0.0:
@@ -98,10 +113,10 @@ def read_odim(blob: bytes):
             rate[raw == undetect] = 0.0
         scale = 'gain/offset'
     proj = s(where.get('projdef', '+proj=somerc +lat_0=46.9524055555556 +lon_0=7.43958333333333 +k_0=1 +x_0=2600000 +y_0=1200000 +ellps=bessel +units=m'))
-    grid = {'proj': proj, 'xsize': int(where.get('xsize', raw.shape[1])), 'ysize': int(where.get('ysize', raw.shape[0])),
-            'xscale': float(where.get('xscale', 1000.0)), 'yscale': float(where.get('yscale', 1000.0)),
-            'LL_lon': float(where.get('LL_lon', 0)), 'LL_lat': float(where.get('LL_lat', 0)), 'UR_lon': float(where.get('UR_lon', 0)), 'UR_lat': float(where.get('UR_lat', 0)),
-            'UL_lon': where.get('UL_lon'), 'UL_lat': where.get('UL_lat')}
+    grid = {'proj': proj, 'xsize': int(num(where.get('xsize'), raw.shape[1])), 'ysize': int(num(where.get('ysize'), raw.shape[0])),
+            'xscale': num(where.get('xscale'), 1000.0), 'yscale': num(where.get('yscale'), 1000.0),
+            'LL_lon': num(where.get('LL_lon'), 0.0), 'LL_lat': num(where.get('LL_lat'), 0.0), 'UR_lon': num(where.get('UR_lon'), 0.0), 'UR_lat': num(where.get('UR_lat'), 0.0),
+            'UL_lon': num(where.get('UL_lon')), 'UL_lat': num(where.get('UL_lat'))}
     log('odim: grid', {k: v for k, v in grid.items() if k != 'proj'}, 'proj', proj[:80])
     return rate, grid, scale, quantity
 
