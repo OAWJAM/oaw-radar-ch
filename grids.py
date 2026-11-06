@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
-"""The national radars that come as a georeferenced grid rather than a WMS — SMHI's Swedish composite (a GeoTIFF in SWEREF99 TM, EPSG:3006) —
+"""The national precipitation pictures that come as a georeferenced grid rather than a WMS — SMHI's Swedish radar composite (a GeoTIFF in
+SWEREF99 TM, EPSG:3006) and GeoSphere Austria's INCA precipitation analysis (a NetCDF on the 1 km Austria Lambert grid, EPSG:31287) —
 reprojected onto plain latitude/longitude and painted with the same scale as the Swiss picture, under <out>/<id>/ like the WMS sources.
 
-  python3 grids.py [--out site] [--frames 12] [--only se] [--probe]
+  python3 grids.py [--out site] [--frames 12] [--only se,at] [--backfill 6] [--probe]
 
 Sources (keyless, open data):
-  SMHI  https://opendata-download-radar.smhi.se/api   version/latest/area/sweden/product/comp — a PNG and a GeoTIFF every five minutes;
-        pixel value v (1…254) → dBZ = 0.4·v − 30 (0 = no echo, 255 = no data); rain rate by Marshall–Palmer Z = 200·R^1.6.
+  SMHI       https://opendata-download-radar.smhi.se/api   version/latest/area/sweden/product/comp — a PNG and a GeoTIFF every five minutes;
+             pixel value v (1…254) → dBZ = 0.4·v − 30 (0 = no echo, 255 = no data); rain rate by Marshall–Palmer Z = 200·R^1.6.
+  GeoSphere  https://dataset.api.hub.geosphere.at/v1/grid/forecast/nowcast-v1-15min-1km — the INCA nowcast, a run every 15 minutes; its
+             first step (lead 0) is the INCA precipitation analysis: the Austrian radar composite blended with the rain gauges, 1 km,
+             rr in kg m-2 per 15 minutes. The plain ask clips the past steps away; start=end=<run time> hands out the analysis step, and
+             forecast_offset=k the k-th run before the newest (max_forecast_offset 5) — so each pass backfills the last 90 minutes.
+             The raw radar itself (inca-v1-15min-1km, historical) needs an account and is not used.
 """
 import argparse, datetime as dt, io, json, os, re, sys, time
 import numpy as np
@@ -17,8 +23,12 @@ import convert
 
 UA = convert.UA
 SMHI = 'https://opendata-download-radar.smhi.se/api/version/latest/area/sweden/product/comp'
+GEO = 'https://dataset.api.hub.geosphere.at/v1'
+INCA = GEO + '/grid/forecast/nowcast-v1-15min-1km'
 SOURCES = [
-    {'id': 'se', 'name': 'Sweden', 'source': 'SMHI', 'licence': 'CC BY 4.0, Source: SMHI', 'product': 'COMP', 'bbox': (9.5, 54.5, 25.0, 69.5), 'step_min': 5},
+    {'id': 'se', 'kind': 'smhi', 'name': 'Sweden', 'source': 'SMHI', 'licence': 'CC BY 4.0, Source: SMHI', 'product': 'COMP', 'bbox': (9.5, 54.5, 25.0, 69.5), 'step_min': 5},
+    {'id': 'at', 'kind': 'geosphere', 'name': 'Austria', 'source': 'GeoSphere Austria', 'licence': 'CC BY 4.0, Source: GeoSphere Austria', 'product': 'INCA analysis',
+     'bbox': (8.1, 45.5, 17.75, 49.5), 'step_min': 15, 'note': 'INCA precipitation analysis: the radar composite blended with the rain gauges (1 km, every 15 min), the nowcast\'s lead-0 step'},
 ]
 
 
@@ -159,6 +169,89 @@ def write_frames(out, src, stamp, img, keep, extra):
     return key, len(frames)
 
 
+def geosphere_runs():
+    """The INCA nowcast's runs on offer, newest first: [(run time, forecast_offset)] — offset k asks for the k-th run before the newest."""
+    j = get(INCA + '/metadata').json()
+    refs = []
+    for s in (j.get('available_forecast_reftimes') or []):
+        try:
+            refs.append(parse_time(str(s)))
+        except Exception:
+            pass
+    if not refs and j.get('last_forecast_reftime'):
+        refs.append(parse_time(str(j['last_forecast_reftime'])))
+    refs = sorted(set(refs), reverse=True)
+    return [(t, k) for k, t in enumerate(refs)]
+
+
+def geosphere_analysis(run, offset, bbox):
+    """One run's analysis step (lead 0) as (valid time, rate mm/h on the 1 km grid, frame, lead hours): start=end=<run time> picks that step,
+    forecast_offset the run. The NetCDF's rr is the 15-minute sum in kg m-2 (scaled int16, -999 missing) on EPSG:31287 — x/y in metres."""
+    import netCDF4
+    W, S, E, N = bbox
+    f = run.strftime('%Y-%m-%dT%H:%M')
+    params = {'parameters': 'rr', 'bbox': '%s,%s,%s,%s' % (S, W, N, E), 'output_format': 'netcdf', 'start': f, 'end': f}
+    if offset:
+        params['forecast_offset'] = offset
+    r = requests.get(INCA, params=params, headers={'User-Agent': UA, 'Accept': 'application/x-netcdf, */*'}, timeout=180)
+    r.raise_for_status()
+    ds = netCDF4.Dataset('inmemory.nc', memory=r.content)
+    t = ds.variables['time']
+    m = re.match(r'(\w+)\s+since\s+(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})(?::(\d{2}))?', str(getattr(t, 'units', '')))
+    if not m:
+        raise RuntimeError('time units not understood: ' + str(getattr(t, 'units', '')))
+    base = parse_time(m.group(2) + 'T' + m.group(3) + ':00')
+    mult = {'days': 86400, 'hours': 3600, 'minutes': 60, 'seconds': 1}.get(m.group(1).lower())
+    if not mult:
+        raise RuntimeError('time units not understood: ' + str(t.units))
+    tv = np.ravel(np.ma.filled(t[:], np.nan))
+    if tv.size == 0:
+        raise RuntimeError('no time step in the answer')
+    valid = base + dt.timedelta(seconds=float(tv[0]) * mult)
+    lead = float(np.ravel(np.ma.filled(ds.variables['leadtime'][:], 0))[0]) if 'leadtime' in ds.variables else float((valid - run).total_seconds() / 3600)
+    rr = ds.variables['rr'][0]                        # masked, scale_factor applied → mm per 15 min
+    x = np.asarray(ds.variables['x'][:], dtype=float); y = np.asarray(ds.variables['y'][:], dtype=float)
+    data = np.ma.filled(np.ma.asarray(rr).astype(np.float32), np.nan)
+    if data.ndim != 2 or x.size < 2 or y.size < 2:
+        raise RuntimeError('unexpected grid %s' % (data.shape,))
+    if y[1] > y[0]:                                   # row 0 must be the north
+        data = data[::-1]; y = y[::-1]
+    xs = float(abs(x[1] - x[0])); ys = float(abs(y[0] - y[1]))
+    frame = {'x0': float(x[0]) - xs / 2, 'y0': float(y[0]) + ys / 2, 'xs': xs, 'ys': ys, 'epsg': 31287}
+    rate = data * 4.0                                 # the 15-minute sum → mm/h
+    rate[rate < 0.1] = 0.0
+    return valid.astimezone(dt.timezone.utc).replace(second=0, microsecond=0), rate, frame, lead
+
+
+def run_geosphere(src, a):
+    """The Austrian source: every run on offer whose analysis is not yet a frame — oldest first, so latest.png ends with the newest."""
+    d = a.out + '/' + src['id']
+    runs = geosphere_runs()
+    if not runs:
+        raise RuntimeError('no run named by the service')
+    todo = [(t, k) for t, k in runs[:max(1, a.backfill)] if not os.path.exists(d + '/frames/' + t.strftime('%Y%m%d%H%M') + '.png')]
+    if not todo:
+        log(src['id'], 'already there', runs[0][0].strftime('%Y%m%d%H%M')); return
+    n = 0
+    for run, k in sorted(todo):
+        try:
+            valid, rate, frame, lead = geosphere_analysis(run, k, src['bbox'])
+        except Exception as e:
+            log(src['id'], 'run', run.strftime('%H:%MZ'), 'offset', k, 'failed:', e); continue
+        if abs(lead) > 1e-6 or valid != run:
+            log(src['id'], 'run', run.strftime('%H:%MZ'), 'offset', k, 'gave lead', lead, 'valid', valid.strftime('%H:%MZ'), '— not the analysis, skipped'); continue
+        if os.path.exists(d + '/frames/' + valid.strftime('%Y%m%d%H%M') + '.png'):
+            continue
+        field, size = reproject_grid(rate, frame, src['bbox'], a.step)
+        img = convert.paint(field)
+        wet = float(np.nanmean(field >= 0.1)) if np.isfinite(field).any() else 0.0
+        key, cnt = write_frames(a.out, src, valid, img, a.frames, {'wet_share': round(wet, 4), 'width': size[0], 'height': size[1], 'step_deg': a.step, 'url': INCA, 'note': src.get('note', ''), 'lead_h': 0})
+        log('  done', key, size, 'wet share', round(wet, 4), 'frames', cnt, 'grid', rate.shape, 'offset', k)
+        n += 1
+    if n == 0:
+        raise RuntimeError('no analysis step read')
+
+
 def probe_norway():
     """MET Norway: the api.met.no radar picture of an area and the area's metadata page (projection, extent) — do they fit?"""
     for area in ('nordic', 'norway', 'southern_norway'):
@@ -284,6 +377,7 @@ def main():
     ap.add_argument('--out', default='site'); ap.add_argument('--frames', type=int, default=12)
     ap.add_argument('--step', type=float, default=0.01); ap.add_argument('--only', default='')
     ap.add_argument('--probe', action='store_true'); ap.add_argument('--file', help='a local GeoTIFF instead of the download (for a try)')
+    ap.add_argument('--backfill', type=int, default=6, help='GeoSphere: how many of the runs on offer to look at per pass (newest first)')
     a = ap.parse_args()
     only = [x for x in a.only.split(',') if x]
     if a.probe:
@@ -293,6 +387,13 @@ def main():
         if only and src['id'] not in only:
             continue
         d = a.out + '/' + src['id']; os.makedirs(d, exist_ok=True)
+        if src.get('kind') == 'geosphere':
+            try:
+                run_geosphere(src, a)
+            except Exception as e:
+                log(src['id'], 'failed:', e)
+                json.dump({'ok': False, 'error': str(e)[:300], 'at': dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}, open(d + '/status.json', 'w'), indent=1)
+            continue
         try:
             if a.file:
                 blob = open(a.file, 'rb').read(); stamp = dt.datetime.now(dt.timezone.utc).replace(second=0, microsecond=0); href = a.file

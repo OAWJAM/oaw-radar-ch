@@ -1,5 +1,6 @@
 # Radar CH — converts the newest MeteoSwiss precipitation radar picture every ten minutes and publishes it on GitHub Pages;
-# the national radars with a keyless WMS (DWD, FMI) are fetched beside it (wms.py) and listed in sources.json.
+# the national radars with a keyless WMS (DWD, FMI) are fetched beside it (wms.py), the gridded ones (SMHI, GeoSphere's INCA analysis) by grids.py,
+# and all of them are listed in sources.json.
 # Pages: Settings → Pages → Source "GitHub Actions" (once). The site then stands at https://<owner>.github.io/<repo>/
 name: radar
 on:
