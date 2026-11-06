@@ -42,9 +42,9 @@ def fetch(url, **kw):
     return r
 
 
-def newest_asset(product: str, when: dt.datetime):
-    """The newest asset of the product in today's item (yesterday's around midnight): (name, href, stamp)."""
-    best = None
+def newest_assets(product: str, when: dt.datetime, n: int = 1):
+    """The newest n assets of the product from today's and yesterday's items, oldest first: [(name, href, stamp)]."""
+    found = {}
     for day in (when, when - dt.timedelta(days=1)):
         item = day.strftime('%Y%m%d') + '-ch'
         try:
@@ -58,11 +58,17 @@ def newest_asset(product: str, when: dt.datetime):
                 continue
             yy, jjj, hh, mm = (int(x) for x in m.groups())
             stamp = dt.datetime(2000 + yy, 1, 1, hh, mm, tzinfo=dt.timezone.utc) + dt.timedelta(days=jjj - 1)
-            if best is None or stamp > best[2] or (stamp == best[2] and name > best[0]):
-                best = (name, a.get('href'), stamp)
-        if best is not None:
+            if stamp not in found or name > found[stamp][0]:
+                found[stamp] = (name, a.get('href'), stamp)
+        if len(found) >= n:
             break
-    return best
+    return [found[k] for k in sorted(found)][-n:]
+
+
+def newest_asset(product: str, when: dt.datetime):
+    """The newest asset of the product: (name, href, stamp), or None."""
+    lst = newest_assets(product, when, 1)
+    return lst[-1] if lst else None
 
 
 def read_odim(blob: bytes):
@@ -139,31 +145,8 @@ def paint(field: np.ndarray) -> Image.Image:
     return Image.fromarray(rgba, 'RGBA')
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument('--out', default='site'); ap.add_argument('--frames', type=int, default=12)
-    ap.add_argument('--step', type=float, default=0.008); ap.add_argument('--product', default='rzc')
-    ap.add_argument('--file', help='a local ODIM file instead of the STAC lookup (for a try)')
-    a = ap.parse_args()
-    os.makedirs(a.out + '/frames', exist_ok=True)
-    now = dt.datetime.now(dt.timezone.utc)
-    if a.file:
-        blob = open(a.file, 'rb').read(); name = os.path.basename(a.file); stamp = now.replace(second=0, microsecond=0); href = a.file
-    else:
-        found = newest_asset(a.product, now)
-        if not found:
-            log('no', a.product, 'asset today — nothing to do'); write_status(a.out, now, None, 'no asset found'); return 0
-        name, href, stamp = found
-        log('newest', name, stamp.isoformat(), href)
-        key = stamp.strftime('%Y%m%d%H%M')
-        if os.path.exists(a.out + '/frames/' + key + '.png') and os.path.exists(a.out + '/latest.json'):
-            try:
-                if json.load(open(a.out + '/latest.json')).get('file') == name:
-                    log('already converted', name); return 0
-            except Exception:
-                pass
-        blob = fetch(href).content
-        log('downloaded', len(blob), 'bytes')
+def convert_one(a, blob, name, href, stamp, now):
+    """One picture: ODIM → the painted PNG under frames/, latest.png and latest.json. Returns (key, size, wet share)."""
     rate, grid, scale, quantity = read_odim(blob)
     field, bbox, size = reproject(rate, grid, BBOX, a.step)
     img = paint(field)
@@ -177,7 +160,11 @@ def main():
             'legend': [{'from_mmh': (SCALE[i - 1][0] if i else 0.1), 'to_mmh': (hi if hi < 1e8 else None), 'rgba': list(c)} for i, (hi, c) in enumerate(SCALE)],
             'url': href}
     json.dump(meta, open(a.out + '/latest.json', 'w'), indent=1)
-    # the loop: the newest frames, the rest pruned
+    return key, size, wet, meta
+
+
+def write_frames_list(a, meta):
+    """The loop: the newest frames kept, the rest pruned, frames.json written."""
     frames = sorted(f for f in os.listdir(a.out + '/frames') if re.match(r'^\d{12}\.png$', f))
     for f in frames[:-a.frames] if len(frames) > a.frames else []:
         os.remove(a.out + '/frames/' + f)
@@ -185,9 +172,46 @@ def main():
     json.dump({'product': a.product.upper(), 'bbox': meta['bbox'], 'crs': 'EPSG:4326', 'updated': meta['converted'], 'source': 'MeteoSwiss',
                'frames': [{'time': f[:4] + '-' + f[4:6] + '-' + f[6:8] + 'T' + f[8:10] + ':' + f[10:12] + 'Z', 'src': 'frames/' + f} for f in frames]},
               open(a.out + '/frames.json', 'w'), indent=1)
-    write_status(a.out, now, meta, '')
+    return len(frames)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--out', default='site'); ap.add_argument('--frames', type=int, default=12)
+    ap.add_argument('--step', type=float, default=0.008); ap.add_argument('--product', default='rzc')
+    ap.add_argument('--backfill', type=int, default=6, help='how many of the newest pictures to look at per pass (the missing ones are converted, oldest first)')
+    ap.add_argument('--file', help='a local ODIM file instead of the STAC lookup (for a try)')
+    a = ap.parse_args()
+    os.makedirs(a.out + '/frames', exist_ok=True)
+    now = dt.datetime.now(dt.timezone.utc)
+    if a.file:
+        blob = open(a.file, 'rb').read(); name = os.path.basename(a.file); stamp = now.replace(second=0, microsecond=0); href = a.file
+        key, size, wet, meta = convert_one(a, blob, name, href, stamp, now)
+        n = write_frames_list(a, meta); write_status(a.out, now, meta, ''); write_index(a.out)
+        log('done:', key, size, 'wet share', round(wet, 4), 'frames', n)
+        return 0
+    assets = newest_assets(a.product, now, max(1, a.backfill))
+    if not assets:
+        log('no', a.product, 'asset today — nothing to do'); write_status(a.out, now, None, 'no asset found'); return 0
+    todo = [x for x in assets if not os.path.exists(a.out + '/frames/' + x[2].strftime('%Y%m%d%H%M') + '.png')]
+    log('newest', assets[-1][0], assets[-1][2].isoformat(), '— to convert:', [x[2].strftime('%H:%M') for x in todo] or 'nothing (all there)')
+    if not todo:
+        return 0
+    done = 0; last = None
+    for name, href, stamp in todo:                                   # oldest first, so latest.png and latest.json end with the newest
+        try:
+            blob = fetch(href).content
+            key, size, wet, meta = convert_one(a, blob, name, href, stamp, now)
+            log('  done', key, size, 'wet share', round(wet, 4), len(blob), 'bytes')
+            done += 1; last = meta
+        except Exception as e:
+            log('  ', name, 'failed:', e)
+    if last is None:
+        write_status(a.out, now, None, 'no picture converted'); return 1
+    n = write_frames_list(a, last)
+    write_status(a.out, now, last, '')
     write_index(a.out)
-    log('done:', key, size, 'wet share', round(wet, 4), 'frames', len(frames))
+    log('done:', done, 'converted, frames', n)
     return 0
 
 

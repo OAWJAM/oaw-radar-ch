@@ -22,7 +22,7 @@ The pictures must carry «Source: MeteoSwiss». Not for operational use — the 
 
 ```
 pip install -r requirements.txt
-python3 convert.py --out site            # the newest picture from the STAC API
+python3 convert.py --out site            # the newest pictures from the STAC API (--backfill 12: the missing ones of the last hour)
 python3 convert.py --file some.h5 --out site
 ```
 

@@ -206,6 +206,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--out', default='site'); ap.add_argument('--frames', type=int, default=12)
     ap.add_argument('--only', default=''); ap.add_argument('--dry', action='store_true')
+    ap.add_argument('--backfill', type=int, default=12, help='at most this many pictures fetched per source and pass (the missing ones, newest first)')
     ap.add_argument('--probe', action='store_true', help='print what the capabilities say about the layers (which exist, which carry a time) and stop')
     a = ap.parse_args()
     if a.probe:
@@ -231,11 +232,11 @@ def main():
             if a.dry:
                 log('  would fetch', src['url'], 'TIME', times[-1]); done.add(src['id']); break
             got = 0; tried = 0
-            for when, stamp in reversed(list(zip(times, stamps))):   # newest first; at most six pictures per run
+            for when, stamp in reversed(list(zip(times, stamps))):   # newest first; at most --backfill pictures per run
                 key = stamp.strftime('%Y%m%d%H%M')
                 if os.path.exists(a.out + '/' + src['id'] + '/frames/' + key + '.png'):
                     got += 1; continue
-                if tried >= 6:
+                if tried >= max(1, a.backfill):
                     break
                 tried += 1
                 try:

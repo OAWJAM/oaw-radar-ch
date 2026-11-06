@@ -235,7 +235,17 @@ def run_geosphere(src, a):
     n = 0
     for run, k in sorted(todo):
         try:
-            valid, rate, frame, lead = geosphere_analysis(run, k, src['bbox'])
+            try:
+                valid, rate, frame, lead = geosphere_analysis(run, k, src['bbox'])
+            except RuntimeError as e:
+                if 'no time step' not in str(e):
+                    raise
+                # a newer run appeared while this pass ran, so every offset moved by one: read the list again and ask once more
+                k2 = dict((t, kk) for t, kk in geosphere_runs()).get(run)
+                if k2 is None or k2 == k:
+                    raise
+                log(src['id'], 'run', run.strftime('%H:%MZ'), 'is now offset', k2, '— asked again')
+                valid, rate, frame, lead = geosphere_analysis(run, k2, src['bbox'])
         except Exception as e:
             log(src['id'], 'run', run.strftime('%H:%MZ'), 'offset', k, 'failed:', e); continue
         if abs(lead) > 1e-6 or valid != run:
