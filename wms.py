@@ -172,7 +172,7 @@ def write_frames(out, src, stamp, png, keep):
     return key, len(frames)
 
 
-NAMES = {'de': 'Germany', 'fi': 'Finland', 'se': 'Sweden', 'no': 'Norway', 'at': 'Austria', 'nl': 'Netherlands', 'fr': 'France', 'es': 'Spain'}
+NAMES = {'de': 'Germany', 'fi': 'Finland', 'se': 'Sweden', 'no': 'Norway', 'at': 'Austria', 'dk': 'Denmark', 'nl': 'Netherlands', 'fr': 'France', 'es': 'Spain', 'it': 'Italy', 'si': 'Slovenia', 'cz': 'Czechia'}
 
 
 def write_sources(out, done):

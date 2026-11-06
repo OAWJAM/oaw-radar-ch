@@ -29,10 +29,13 @@ SOURCES = [
     {'id': 'se', 'kind': 'smhi', 'name': 'Sweden', 'source': 'SMHI', 'licence': 'CC BY 4.0, Source: SMHI', 'product': 'COMP', 'bbox': (9.5, 54.5, 25.0, 69.5), 'step_min': 5},
     {'id': 'at', 'kind': 'geosphere', 'name': 'Austria', 'source': 'GeoSphere Austria', 'licence': 'CC BY 4.0, Source: GeoSphere Austria', 'product': 'INCA analysis',
      'bbox': (8.1, 45.5, 17.75, 49.5), 'step_min': 15, 'note': 'INCA precipitation analysis: the radar composite blended with the rain gauges (1 km, every 15 min), the nowcast\'s lead-0 step'},
+    {'id': 'dk', 'kind': 'dmi', 'name': 'Denmark', 'source': 'DMI', 'licence': 'CC BY 4.0, Source: DMI', 'product': 'Radar composite', 'bbox': (4.5, 52.5, 20.5, 59.5), 'step_min': 5, 'step': 0.02,
+     'note': 'DMI\'s radar composite from the open data API (no key since 2026 — «neither registration, nor API key are needed»), ODIM HDF5 every 5 min (6 Nov, late)'},
     {'id': 'no', 'kind': 'nordic', 'name': 'Norway (Nordic composite)', 'source': 'MET Norway', 'licence': 'CC BY 4.0, Source: MET Norway', 'product': 'Nordic radar composite (pcappi 0 dBZ)',
      'bbox': (0.5, 54.0, 38.0, 72.0), 'step_min': 5, 'step': 0.02,
      'note': 'The Nordic composite from MET Norway\'s THREDDS server — the radars of Norway, Sweden and Finland on one 1 km Lambert grid every 5 min (6 Nov, late: data, not the rendered picture of api.met.no)'},
 ]
+DMI = 'https://opendataapi.dmi.dk/v1/radardata'
 THREDDS = 'https://thredds.met.no/thredds'
 NORDIC_CAT = THREDDS + '/catalog/remotesensing/reflectivity-nordic/latest/catalog.html'
 
@@ -267,6 +270,69 @@ def run_geosphere(src, a):
         n += 1
     if n == 0:
         raise RuntimeError('no analysis step read')
+
+
+def odim_rate(rate, quantity):
+    """An ODIM field as mm/h: a RATE/RR field as it is; a reflectivity field (DBZH, TH …) through Marshall-Palmer (Z = 200 R^1.6), below 5 dBZ dry."""
+    q = str(quantity or '').upper()
+    if q.startswith('DBZ') or q in ('TH', 'TV', 'ZH'):
+        r = (np.power(10.0, rate / 10.0) / 200.0) ** (1.0 / 1.6)
+        r[rate < 5.0] = 0.0
+        r[~np.isfinite(rate)] = np.nan
+        return r.astype(np.float32)
+    return rate
+
+
+def dmi_items(n=12):
+    """The newest n composite files of DMI's radar data API, oldest first: [(stamp, href)]. The items of the last two hours, the asset's download link."""
+    now = dt.datetime.now(dt.timezone.utc)
+    r = get(DMI + '/collections/composite/items', params={'limit': 200, 'datetime': (now - dt.timedelta(hours=2)).strftime('%Y-%m-%dT%H:%M:%SZ') + '/' + now.strftime('%Y-%m-%dT%H:%M:%SZ')})
+    out = {}
+    for ft in (r.json().get('features') or []):
+        props = ft.get('properties') or {}
+        t = props.get('datetime') or props.get('created') or ''
+        assets = ft.get('assets') or ft.get('asset') or {}
+        href = ''
+        for k, v in (assets.items() if isinstance(assets, dict) else []):
+            if isinstance(v, dict) and v.get('href'):
+                href = v['href']; break
+        if not href or not t:
+            continue
+        try:
+            out[parse_time(str(t))] = href
+        except Exception:
+            pass
+    return [(t, out[t]) for t in sorted(out)][-n:]
+
+
+def run_dmi(src, a):
+    d = a.out + '/' + src['id']
+    step = src.get('step', a.step)
+    items = dmi_items(max(1, a.backfill))
+    if not items:
+        raise RuntimeError('no composite item in the last two hours')
+    todo = [(t, h) for t, h in items if not os.path.exists(d + '/frames/' + t.strftime('%Y%m%d%H%M') + '.png')]
+    if not todo:
+        log(src['id'], 'already there', items[-1][0].strftime('%Y%m%d%H%M')); return 0
+    got = 0
+    for stamp, href in todo:
+        try:
+            blob = get(href).content
+            rate, grid, scale, quantity = convert.read_odim(blob)
+            rate = odim_rate(rate, quantity)
+            field, _, size = convert.reproject(rate, grid, src['bbox'], step)
+            field[np.isfinite(field) & (field < 0.1)] = 0.0
+            img = convert.paint(field)
+            wet = float(np.nanmean(field >= 0.1)) if np.isfinite(field).any() else 0.0
+            if convert.coverage_stale(d, stamp):
+                convert.write_coverage(d, np.isfinite(field), src['bbox'], step, src['source'])
+            k, n = write_frames(a.out, src, stamp, img, a.frames, {'wet_share': round(wet, 4), 'width': size[0], 'height': size[1], 'step_deg': step, 'url': href, 'note': src.get('note', ''), 'quantity': quantity})
+            log('  done', k, size, 'wet share', round(wet, 4), 'frames', n, 'quantity', quantity); got += 1
+        except Exception as e:
+            log('  ', stamp.strftime('%H:%MZ'), 'failed:', e)
+    if not got:
+        raise RuntimeError('no picture converted')
+    return got
 
 
 def nordic_files(n=12):
@@ -528,9 +594,9 @@ def main():
         if only and src['id'] not in only:
             continue
         d = a.out + '/' + src['id']; os.makedirs(d, exist_ok=True)
-        if src.get('kind') in ('geosphere', 'nordic'):
+        if src.get('kind') in ('geosphere', 'nordic', 'dmi'):
             try:
-                (run_geosphere if src['kind'] == 'geosphere' else run_nordic)(src, a)
+                {'geosphere': run_geosphere, 'nordic': run_nordic, 'dmi': run_dmi}[src['kind']](src, a)
             except Exception as e:
                 log(src['id'], 'failed:', e)
                 json.dump({'ok': False, 'error': str(e)[:300], 'at': dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}, open(d + '/status.json', 'w'), indent=1)
