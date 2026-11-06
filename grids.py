@@ -26,7 +26,8 @@ SMHI = 'https://opendata-download-radar.smhi.se/api/version/latest/area/sweden/p
 GEO = 'https://dataset.api.hub.geosphere.at/v1'
 INCA = GEO + '/grid/forecast/nowcast-v1-15min-1km'
 SOURCES = [
-    {'id': 'se', 'kind': 'smhi', 'name': 'Sweden', 'source': 'SMHI', 'licence': 'CC BY 4.0, Source: SMHI', 'product': 'COMP', 'bbox': (9.5, 54.5, 25.0, 69.5), 'step_min': 5},
+    {'id': 'se', 'kind': 'smhi', 'name': 'Sweden', 'source': 'SMHI', 'licence': 'CC BY 4.0, Source: SMHI', 'product': 'COMP', 'bbox': (9.5, 54.5, 25.0, 69.5), 'step_min': 5,
+     'retired': 'the Nordic composite (no) carries the Swedish radars since 7 Nov (the owner, 6 Nov 23:18: «20. ersetzen»)'},
     {'id': 'at', 'kind': 'geosphere', 'name': 'Austria', 'source': 'GeoSphere Austria', 'licence': 'CC BY 4.0, Source: GeoSphere Austria', 'product': 'INCA analysis',
      'bbox': (8.1, 45.5, 17.75, 49.5), 'step_min': 15, 'note': 'INCA precipitation analysis: the radar composite blended with the rain gauges (1 km, every 15 min), the nowcast\'s lead-0 step'},
     {'id': 'dk', 'kind': 'dmi', 'name': 'Denmark', 'source': 'DMI', 'licence': 'CC BY 4.0, Source: DMI', 'product': 'Radar composite', 'bbox': (4.5, 52.5, 20.5, 59.5), 'step_min': 5, 'step': 0.02,
@@ -35,7 +36,7 @@ SOURCES = [
      'secret': 'KNMI_API_KEY', 'note': 'KNMI\'s radar reflectivity composite (RAD_NL25_PCP_NA, 1 km, every 5 min) from the Data Platform — the key is the repository secret KNMI_API_KEY (6 Nov, late)'},
     {'id': 'fr', 'kind': 'meteofrance', 'name': 'France', 'source': 'M\u00e9t\u00e9o-France', 'licence': 'Licence Ouverte 2.0, Source: M\u00e9t\u00e9o-France', 'product': 'Radar mosaic', 'bbox': (-6.0, 41.0, 10.5, 51.5), 'step_min': 5, 'step': 0.02,
      'secret': 'METEOFRANCE_APP_ID', 'note': 'M\u00e9t\u00e9o-France\'s radar mosaics from the Paquet Radar API — the application id is the repository secret METEOFRANCE_APP_ID (6 Nov, late; the archive\'s members are logged on the first run)'},
-    {'id': 'no', 'kind': 'nordic', 'name': 'Norway (Nordic composite)', 'source': 'MET Norway', 'licence': 'CC BY 4.0, Source: MET Norway', 'product': 'Nordic radar composite (pcappi 0 dBZ)',
+    {'id': 'no', 'kind': 'nordic', 'name': 'Norway · Sweden · Finland (Nordic composite)', 'source': 'MET Norway', 'licence': 'CC BY 4.0, Source: MET Norway', 'product': 'Nordic radar composite (pcappi 0 dBZ)',
      'bbox': (0.5, 54.0, 38.0, 72.0), 'step_min': 5, 'step': 0.02,
      'note': 'The Nordic composite from MET Norway\'s THREDDS server — the radars of Norway, Sweden and Finland on one 1 km Lambert grid every 5 min (6 Nov, late: data, not the rendered picture of api.met.no)'},
 ]
@@ -766,6 +767,8 @@ def main():
     for src in SOURCES:
         if only and src['id'] not in only:
             continue
+        if src.get('retired') and src['id'] not in only:
+            log(src['id'], 'retired —', src['retired']); continue
         d = a.out + '/' + src['id']; os.makedirs(d, exist_ok=True)
         if src.get('kind') in ('geosphere', 'nordic', 'dmi', 'knmi', 'meteofrance'):
             try:

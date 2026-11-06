@@ -20,8 +20,9 @@ SOURCES = [
      'bbox': (3.5, 47.0, 16.5, 55.5), 'step_min': 5, 'clear': True},
     {'id': 'fi', 'name': 'Finland', 'source': 'FMI', 'licence': 'CC BY 4.0, Source: FMI', 'product': 'RR',
      'url': 'https://openwms.fmi.fi/geoserver/Radar/wms', 'layers': ['radar_finland_cappi_rate', 'suomi_rr_eureffin', 'radar_finland_cappi_dbzh'],
-     'bbox': (19.0, 59.0, 32.0, 70.5), 'step_min': 5},
+     'bbox': (19.0, 59.0, 32.0, 70.5), 'step_min': 5, 'retired': 'the Nordic composite (no) carries the Finnish radars since 7 Nov (the owner, 6 Nov 23:18: «20. ersetzen»)'},
 ]
+RETIRED = ['fi', 'se']                                 # sources the Nordic composite replaced (7 Nov): their folders leave the site, their code stays for a day they are wanted again
 ROOT_SOURCE = {'id': 'ch', 'name': 'Switzerland', 'path': '', 'licence': 'CC-BY, Source: MeteoSwiss', 'source': 'MeteoSwiss', 'product': 'RZC'}
 STEP_DEG = 0.01            # a pixel per hundredth of a degree: 1 300 × 850 px for Germany
 
@@ -178,13 +179,16 @@ def write_frames(out, src, stamp, png, keep):
     return key, len(frames)
 
 
-NAMES = {'de': 'Germany', 'fi': 'Finland', 'se': 'Sweden', 'no': 'Norway', 'at': 'Austria', 'dk': 'Denmark', 'nl': 'Netherlands', 'fr': 'France', 'es': 'Spain', 'it': 'Italy', 'si': 'Slovenia', 'cz': 'Czechia'}
+NAMES = {'de': 'Germany', 'fi': 'Finland', 'se': 'Sweden', 'no': 'Norway · Sweden · Finland', 'at': 'Austria', 'dk': 'Denmark', 'nl': 'Netherlands', 'fr': 'France', 'es': 'Spain', 'it': 'Italy', 'si': 'Slovenia', 'cz': 'Czechia'}
 
 
 def write_sources(out, done):
     """The list of this site's sources: every folder with a frames.json (the WMS ones, the grids), the Swiss converter at the root last —
     the boards draw the sources in this order, so the Swiss picture lies on top where they overlap."""
     lst = []
+    for d in RETIRED:                                                          # a retired source's folder goes, so the list never names it again
+        if os.path.isdir(out + '/' + d):
+            import shutil; shutil.rmtree(out + '/' + d, ignore_errors=True); log('retired folder removed:', d)
     for d in sorted(os.listdir(out)):
         fj = out + '/' + d + '/frames.json'
         if not re.match(r'^[a-z0-9_-]{1,16}$', d) or not os.path.isfile(fj):
@@ -243,6 +247,8 @@ def main():
     for src in SOURCES:
         if only and src['id'] not in only:
             continue
+        if src.get('retired') and src['id'] not in only:
+            log(src['id'], 'retired —', src['retired']); continue
         W, S, E, N = src['bbox']
         size = (int(round((E - W) / STEP_DEG)), int(round((N - S) / STEP_DEG)))
         caps = None if a.dry else capabilities(src['url'])

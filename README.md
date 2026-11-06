@@ -41,3 +41,8 @@ Beside every `frames.json` that can say where its radars see, a `coverage.json` 
 ## The keyed radars (6 Nov, late)
 
 KNMI (Netherlands) and Météo-France (France) hand their composites out only with a free key. The keys are **repository secrets** — Settings → Secrets and variables → Actions — named `KNMI_API_KEY` (the Data Platform key) and `METEOFRANCE_APP_ID` (the portal's application id, the Basic value from «Générer Token»); `AEMET_API_KEY` is reserved for Spain. `grids.py` reads them from the environment and skips a source whose secret is missing, so the run stays green without them. Denmark needs none since DMI opened its API; the Nordic composite needs none either.
+
+
+## Retired sources (7 Nov)
+
+The Nordic composite carries the Swedish and Finnish radars, so the single sources `se` (SMHI) and `fi` (FMI) are retired — marked `retired` in their tables, skipped by the runs, their folders removed from the site (`RETIRED` in wms.py). Their code stays; `--only se` or `--only fi` runs one on purpose.
