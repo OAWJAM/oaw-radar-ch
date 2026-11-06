@@ -16,10 +16,10 @@ import requests
 UA = 'oaw-radar-ch converter (github actions; contact via the repository)'
 SOURCES = [
     {'id': 'de', 'name': 'Germany', 'source': 'DWD', 'licence': 'dl-de/by-2-0, Source: DWD', 'product': 'RADOLAN',
-     'url': 'https://maps.dwd.de/geoserver/dwd/wms', 'layers': ['dwd:Niederschlagsradar', 'dwd:RX-Produkt', 'dwd:RADOLAN-RV', 'dwd:RV-Produkt'],
+     'url': 'https://maps.dwd.de/geoserver/dwd/wms', 'layers': ['Radar_wn-analysis_1x1km_ger', 'dwd:Niederschlagsradar', 'dwd:RX-Produkt'],
      'bbox': (3.5, 47.0, 16.5, 55.5), 'step_min': 5},
     {'id': 'fi', 'name': 'Finland', 'source': 'FMI', 'licence': 'CC BY 4.0, Source: FMI', 'product': 'RR',
-     'url': 'https://openwms.fmi.fi/geoserver/Radar/wms', 'layers': ['Radar:suomi_rr_eureffin', 'Radar:suomi_dbz_eureffin'],
+     'url': 'https://openwms.fmi.fi/geoserver/Radar/wms', 'layers': ['radar_finland_cappi_rate', 'radar_finland_cappi_dbzh', 'Radar:suomi_rr_eureffin'],
      'bbox': (19.0, 59.0, 32.0, 70.5), 'step_min': 5},
 ]
 ROOT_SOURCE = {'id': 'ch', 'name': 'Switzerland', 'path': '', 'licence': 'CC-BY, Source: MeteoSwiss', 'source': 'MeteoSwiss', 'product': 'RZC'}
@@ -72,6 +72,40 @@ def layer_time(caps, layer):
                 elif re.match(r'^\d{4}-\d\d-\d\dT', last):
                     return last
     return None
+
+
+def layer_times(caps, layer, n=12):
+    """The newest n picture times the capabilities name for the layer (ISO, 'Z'): a list, or a start/end/period range expanded."""
+    if not caps:
+        return []
+    i = caps.find('<Name>' + layer + '</Name>')
+    if i < 0:
+        return []
+    body = caps[i:i + 20000]
+    for tag in ('Extent', 'Dimension'):
+        for dm in re.finditer(r'<' + tag + r'[^>]*name="time"([^>/]*)>([^<]*)</' + tag + '>', body, re.I):
+            text = dm.group(2).strip()
+            if not text:
+                continue
+            out = []
+            for part in text.split(','):
+                part = part.strip()
+                if '/' in part:
+                    bits = part.split('/')
+                    if len(bits) >= 3 and re.match(r'^PT(\d+)M$', bits[2]) and re.match(r'^\d{4}-\d\d-\d\dT', bits[1]):
+                        end = parse_time(bits[1]); step = int(re.match(r'^PT(\d+)M$', bits[2]).group(1))
+                        start = parse_time(bits[0]) if re.match(r'^\d{4}-\d\d-\d\dT', bits[0]) else end - dt.timedelta(minutes=step * n)
+                        t = end; k = 0
+                        while t >= start and k < n:
+                            out.append(t.strftime('%Y-%m-%dT%H:%M:%SZ')); t -= dt.timedelta(minutes=step); k += 1
+                        out.reverse()
+                    elif re.match(r'^\d{4}-\d\d-\d\dT', bits[-1 if len(bits) < 3 else 1]):
+                        out.append(bits[1] if len(bits) >= 2 else bits[0])
+                elif re.match(r'^\d{4}-\d\d-\d\dT', part):
+                    out.append(part)
+            if out:
+                return sorted(set(out))[-n:]
+    return []
 
 
 def parse_time(s):
@@ -141,8 +175,8 @@ def probe(only):
         log(src['id'], 'capabilities', len(caps), 'chars; layers with a time dimension:')
         for m in re.finditer(r'<Name>([^<]+)</Name>(.{0,6000}?)(?=<Name>|</Layer>\s*</Layer>)', caps, re.S):
             name, body = m.group(1), m.group(2)
-            t = re.search(r'<(Extent|Dimension)[^>]*name="time"([^>]*)>([^<]*)<', body, re.I)
-            if t and (name.find(':') > 0 or name.lower().find('radar') >= 0 or name.lower().find('rx') >= 0):
+            t = re.search(r'<(Extent|Dimension)[^>]*name="time"([^>/]*)>([^<]*)</(?:Extent|Dimension)>', body, re.I)
+            if t and re.search(r'radar|rx|rv|wn|rr|rate|dbz|precip|nieder', name, re.I):
                 d = re.search(r'default="([^"]+)"', t.group(2)); ext = t.group(3).strip()
                 log('   ', name, '| default', d.group(1) if d else '-', '| extent …', ext[-60:] if ext else '-')
         for layer in src['layers']:
@@ -172,23 +206,34 @@ def main():
         caps = None if a.dry else capabilities(src['url'])
         error = ''
         for layer in src['layers']:
-            when = layer_time(caps, layer)
-            stamp = parse_time(when) if when else dt.datetime.now(dt.timezone.utc).replace(second=0, microsecond=0)
-            if not when:                                        # no time named: the picture is the server's current one, stamped to the step
-                stamp = stamp - dt.timedelta(minutes=stamp.minute % src['step_min'])
-            log(src['id'], layer, 'time', when or '(current)', 'size', size)
+            times = layer_times(caps, layer, a.frames)
+            if not times:                                       # no time named: the picture is the server's current one, stamped to the step
+                now = dt.datetime.now(dt.timezone.utc).replace(second=0, microsecond=0)
+                times = [None]; stamps = [now - dt.timedelta(minutes=now.minute % src['step_min'])]
+            else:
+                stamps = [parse_time(t) for t in times]
+            log(src['id'], layer, 'times', (times[-1] or '(current)') + (' and %d more' % (len(times) - 1) if len(times) > 1 else ''), 'size', size)
             if a.dry:
-                log('  would fetch', src['url'], 'TIME', when); done.add(src['id']); break
-            key = stamp.strftime('%Y%m%d%H%M')
-            if os.path.exists(a.out + '/' + src['id'] + '/frames/' + key + '.png'):
-                log('  already there', key); done.add(src['id']); error = ''; break
-            try:
-                png = getmap(src, layer, when, size)
-            except Exception as e:
-                error = str(e); log('  failed:', error); continue
-            k, n = write_frames(a.out, src, stamp, png, a.frames)
-            log('  done', k, len(png), 'bytes, frames', n); done.add(src['id']); error = ''
-            break
+                log('  would fetch', src['url'], 'TIME', times[-1]); done.add(src['id']); break
+            got = 0; tried = 0
+            for when, stamp in reversed(list(zip(times, stamps))):   # newest first; at most six pictures per run
+                key = stamp.strftime('%Y%m%d%H%M')
+                if os.path.exists(a.out + '/' + src['id'] + '/frames/' + key + '.png'):
+                    got += 1; continue
+                if tried >= 6:
+                    break
+                tried += 1
+                try:
+                    png = getmap(src, layer, when, size)
+                except Exception as e:
+                    error = str(e); log('  failed', key, ':', error); break
+                k, n = write_frames(a.out, src, stamp, png, a.frames)
+                log('  done', k, len(png), 'bytes, frames', n); got += 1; error = ''
+            if got:
+                done.add(src['id']); error = ''
+                if tried == 0:
+                    log('  all there already')
+                break
         if error:
             failed.append(src['id'] + ': ' + error)
             d = a.out + '/' + src['id']; os.makedirs(d, exist_ok=True)
