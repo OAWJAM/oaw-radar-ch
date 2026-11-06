@@ -458,6 +458,7 @@ def probe_dmi():
     def s(v):
         if isinstance(v, bytes): return v.decode('utf-8', 'replace')
         if isinstance(v, np.ndarray): return v.tolist() if v.size < 12 else ('array ' + str(v.shape))
+        if isinstance(v, np.generic): return v.item()
         return v
     with h5py.File(io.BytesIO(blob), 'r') as f:
         def walk(name, obj):
