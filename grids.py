@@ -184,6 +184,55 @@ def probe_norway():
     return 0
 
 
+GEO = 'https://dataset.api.hub.geosphere.at/v1'
+
+
+def probe_austria():
+    """GeoSphere Austria: the API's description of the grid endpoint and the INCA nowcast's metadata (parameters, grid, times)."""
+    try:
+        spec = get(GEO + '/openapi.json').json()
+        for path, ops in spec.get('paths', {}).items():
+            if '/grid/' in path and '{' in path:
+                for meth, op in ops.items():
+                    params = [(q.get('name'), q.get('required', False), str(q.get('schema', {}).get('type')), str(q.get('description', ''))[:80]) for q in op.get('parameters', [])]
+                    log('grid endpoint', meth, path, params)
+    except Exception as e:
+        log('openapi not read:', e)
+    for rid in ('nowcast-v1-15min-1km', 'inca-v1-15min-1km'):
+        for mode in ('forecast', 'current', 'historical'):
+            try:
+                r = requests.get(GEO + '/grid/%s/%s/metadata' % (mode, rid), headers={'User-Agent': UA}, timeout=60)
+                if r.status_code != 200:
+                    log('metadata', mode, rid, r.status_code, r.text[:160]); continue
+                j = r.json()
+                log('metadata', mode, rid, 'keys', list(j.keys())[:20])
+                log('   parameters', [(p.get('name'), p.get('unit')) for p in j.get('parameters', [])][:20])
+                for k in ('bbox', 'bbox_outer', 'spatial_resolution_m', 'crs', 'grid_bounds', 'frequency', 'start_time', 'end_time', 'timestamps', 'time_range'):
+                    if k in j:
+                        v = j[k]; log('  ', k, (v[:3] + ['…'] + v[-2:]) if isinstance(v, list) and len(v) > 6 else v)
+            except Exception as e:
+                log('metadata', mode, rid, 'failed:', e)
+    # one small grid ask, netcdf, the newest analysis
+    for mode in ('forecast', 'current'):
+        try:
+            r = requests.get(GEO + '/grid/%s/nowcast-v1-15min-1km' % mode, params={'parameters': 'RR', 'bbox': '47.0,12.0,47.5,12.5', 'output_format': 'netcdf', 'forecast_offset': 0}, headers={'User-Agent': UA}, timeout=90)
+            log('grid ask', mode, r.status_code, r.headers.get('content-type'), len(r.content), r.text[:200] if r.status_code != 200 else '')
+            if r.status_code == 200 and 'netcdf' in str(r.headers.get('content-type', '')).lower() or r.content[:4] in (b'CDF\x01', b'CDF\x02', b'\x89HDF'):
+                try:
+                    import netCDF4
+                    ds = netCDF4.Dataset('inmemory.nc', memory=r.content)
+                    log('   variables', {k: (v.dimensions, v.shape) for k, v in ds.variables.items()})
+                    for k in ('lat', 'lon', 'x', 'y', 'time', 'RR'):
+                        if k in ds.variables:
+                            v = ds.variables[k][:]; log('   ', k, getattr(v, 'shape', None), float(np.nanmin(v)) if v.size else None, float(np.nanmax(v)) if v.size else None, dict(ds.variables[k].__dict__))
+                    log('   global', {k: str(v)[:80] for k, v in ds.__dict__.items()})
+                except Exception as e:
+                    log('   netcdf not read:', e)
+        except Exception as e:
+            log('grid ask', mode, 'failed:', e)
+    return 0
+
+
 def probe():
     j = get(SMHI).json()
     log('smhi keys:', list(j.keys()))
@@ -216,7 +265,7 @@ def main():
     a = ap.parse_args()
     only = [x for x in a.only.split(',') if x]
     if a.probe:
-        return probe() if (not only or 'se' in only) else probe_norway()
+        return probe() if (not only or 'se' in only) else (probe_austria() if 'at' in only else probe_norway())
     os.makedirs(a.out, exist_ok=True)
     for src in SOURCES:
         if only and src['id'] not in only:
