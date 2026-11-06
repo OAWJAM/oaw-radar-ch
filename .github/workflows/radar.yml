@@ -1,4 +1,5 @@
-# Radar CH — converts the newest MeteoSwiss precipitation radar picture every ten minutes and publishes it on GitHub Pages.
+# Radar CH — converts the newest MeteoSwiss precipitation radar picture every ten minutes and publishes it on GitHub Pages;
+# the national radars with a keyless WMS (DWD, FMI) are fetched beside it (wms.py) and listed in sources.json.
 # Pages: Settings → Pages → Source "GitHub Actions" (once). The site then stands at https://<owner>.github.io/<repo>/
 name: radar
 on:
@@ -34,6 +35,9 @@ jobs:
           restore-keys: |
             radar-site-
       - run: python3 convert.py --out site --frames 12
+      # the other national radars (keyless WMS: DWD, FMI) through the same site; a failing service never stops the Swiss picture
+      - run: python3 wms.py --out site --frames 12
+        continue-on-error: true
       - uses: actions/cache/save@v4
         if: always()
         with:
