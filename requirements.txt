@@ -3,3 +3,4 @@ h5py>=3.10
 pyproj>=3.6
 Pillow>=10.0
 requests>=2.31
+tifffile>=2024.1

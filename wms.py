@@ -152,12 +152,27 @@ def write_frames(out, src, stamp, png, keep):
     return key, len(frames)
 
 
+NAMES = {'de': 'Germany', 'fi': 'Finland', 'se': 'Sweden', 'no': 'Norway', 'at': 'Austria', 'nl': 'Netherlands', 'fr': 'France', 'es': 'Spain'}
+
+
 def write_sources(out, done):
-    """The list of this site's sources: the WMS ones that have frames, and the Swiss converter at the root."""
+    """The list of this site's sources: every folder with a frames.json (the WMS ones, the grids), the Swiss converter at the root last —
+    the boards draw the sources in this order, so the Swiss picture lies on top where they overlap."""
     lst = []
-    for src in SOURCES:
-        if os.path.exists(out + '/' + src['id'] + '/frames.json'):
-            lst.append({'id': src['id'], 'name': src['name'], 'path': src['id'], 'licence': src['licence'], 'source': src['source'], 'product': src['product'], 'ok': src['id'] in done})
+    for d in sorted(os.listdir(out)):
+        fj = out + '/' + d + '/frames.json'
+        if not re.match(r'^[a-z0-9_-]{1,16}$', d) or not os.path.isfile(fj):
+            continue
+        try:
+            j = json.load(open(fj))
+        except Exception:
+            continue
+        st = {}
+        try:
+            st = json.load(open(out + '/' + d + '/status.json'))
+        except Exception:
+            pass
+        lst.append({'id': d, 'name': NAMES.get(d, d.upper()), 'path': d, 'licence': j.get('licence', ''), 'source': j.get('source', ''), 'product': j.get('product', ''), 'ok': bool(st.get('ok', d in done)), 'updated': j.get('updated', '')})
     if os.path.exists(out + '/frames.json'):
         lst.append(ROOT_SOURCE)
     json.dump({'updated': dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), 'sources': lst}, open(out + '/sources.json', 'w'), indent=1)

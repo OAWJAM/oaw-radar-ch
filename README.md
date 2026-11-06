@@ -29,3 +29,5 @@ python3 convert.py --file some.h5 --out site
 ## More radars through the same site
 
 `wms.py` fetches the national radars that publish a keyless WMS — DWD (Germany, dl-de/by-2-0) and FMI (Finland, CC BY 4.0) — as plain latitude/longitude PNGs at the newest picture time the service names, under `de/` and `fi/` with their own `frames.json`, and writes `sources.json` at the root: the list of every source of this site (the Swiss converter's pictures stay at the root). The pictures carry the services' own colour scales.
+
+`grids.py` adds the radars that come as a georeferenced grid: SMHI's Swedish composite (a GeoTIFF in SWEREF99 TM, CC BY 4.0), reprojected onto latitude/longitude and painted with the Swiss scale, under `se/`.

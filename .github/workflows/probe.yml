@@ -16,3 +16,5 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       - run: python3 wms.py --probe
+      - run: python3 grids.py --probe
+        continue-on-error: true
