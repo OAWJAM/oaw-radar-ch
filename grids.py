@@ -198,8 +198,16 @@ def probe_austria():
                     log('grid endpoint', meth, path, params)
     except Exception as e:
         log('openapi not read:', e)
+    try:
+        ds = get(GEO + '/datasets').json()
+        names = sorted(k for k in ds.keys() if re.search(r'radar|inca|nowcast|precip|rr', k, re.I))
+        log('datasets with radar/inca/nowcast in the name:', names[:40])
+        for k in names[:12]:
+            v = ds[k]; log('  ', k, {kk: str(vv)[:60] for kk, vv in (v.items() if isinstance(v, dict) else [])} if isinstance(v, dict) else str(v)[:120])
+    except Exception as e:
+        log('datasets not read:', e)
     for rid in ('nowcast-v1-15min-1km', 'inca-v1-15min-1km'):
-        for mode in ('forecast', 'current', 'historical'):
+        for mode in ('forecast', 'historical'):
             try:
                 r = requests.get(GEO + '/grid/%s/%s/metadata' % (mode, rid), headers={'User-Agent': UA}, timeout=60)
                 if r.status_code != 200:
@@ -207,29 +215,31 @@ def probe_austria():
                 j = r.json()
                 log('metadata', mode, rid, 'keys', list(j.keys())[:20])
                 log('   parameters', [(p.get('name'), p.get('unit')) for p in j.get('parameters', [])][:20])
-                for k in ('bbox', 'bbox_outer', 'spatial_resolution_m', 'crs', 'grid_bounds', 'frequency', 'start_time', 'end_time', 'timestamps', 'time_range'):
+                for k in ('bbox', 'bbox_outer', 'spatial_resolution_m', 'crs', 'grid_bounds', 'frequency', 'start_time', 'end_time', 'timestamps', 'time_range',
+                          'forecast_length', 'max_forecast_offset', 'last_forecast_reftime', 'available_forecast_reftimes', 'type', 'mode', 'response_formats'):
                     if k in j:
-                        v = j[k]; log('  ', k, (v[:3] + ['…'] + v[-2:]) if isinstance(v, list) and len(v) > 6 else v)
+                        v = j[k]; log('  ', k, (v[:3] + ['…'] + v[-3:]) if isinstance(v, list) and len(v) > 8 else v)
             except Exception as e:
                 log('metadata', mode, rid, 'failed:', e)
-    # one small grid ask, netcdf, the newest analysis
-    for mode in ('forecast',):
+    # small grid asks, netcdf: the newest run and the one before (forecast_offset=1) — which times, which lead times?
+    for mode, extra in (('forecast', {}), ('forecast', {'forecast_offset': 1}), ('historical', {'start': (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=2)).strftime('%Y-%m-%dT%H:%M'), 'end': dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M')})):
+        rid = 'inca-v1-15min-1km' if mode == 'historical' else 'nowcast-v1-15min-1km'
         try:
-            r = requests.get(GEO + '/grid/%s/nowcast-v1-15min-1km' % mode, params={'parameters': 'rr', 'bbox': '47.0,12.0,47.5,12.5', 'output_format': 'netcdf'}, headers={'User-Agent': UA}, timeout=90)
-            log('grid ask', mode, r.status_code, r.headers.get('content-type'), len(r.content), r.text[:200] if r.status_code != 200 else '')
+            r = requests.get(GEO + '/grid/%s/%s' % (mode, rid), params={'parameters': 'rr', 'bbox': '47.0,12.0,47.5,12.5', 'output_format': 'netcdf'} | extra, headers={'User-Agent': UA}, timeout=90)
+            log('grid ask', mode, extra, r.status_code, r.headers.get('content-type'), len(r.content), r.text[:300] if r.status_code != 200 else '')
             if r.status_code == 200 and (r.content[:3] == b'CDF' or r.content[:4] == b'\x89HDF' or 'netcdf' in str(r.headers.get('content-type', '')).lower()):
                 try:
                     import netCDF4
                     ds = netCDF4.Dataset('inmemory.nc', memory=r.content)
                     log('   variables', {k: (v.dimensions, v.shape) for k, v in ds.variables.items()})
-                    for k in ('lat', 'lon', 'x', 'y', 'time', 'rr'):
+                    for k in ('time', 'leadtime', 'rr'):
                         if k in ds.variables:
-                            v = ds.variables[k][:]; log('   ', k, getattr(v, 'shape', None), float(np.nanmin(v)) if v.size else None, float(np.nanmax(v)) if v.size else None, dict(ds.variables[k].__dict__))
-                    log('   global', {k: str(v)[:80] for k, v in ds.__dict__.items()})
+                            v = ds.variables[k][:]; log('   ', k, getattr(v, 'shape', None), list(np.ravel(v)[:14]) if k != 'rr' else (float(np.nanmin(v)), float(np.nanmax(v))), {kk: str(vv)[:90] for kk, vv in ds.variables[k].__dict__.items() if kk in ('units', 'long_name', 'standard_name', 'description', 'cell_method')})
+                    log('   global', {k: str(v)[:120] for k, v in ds.__dict__.items() if k in ('last_forecast_reftime', 'available_forecast_reftimes', 'forecast_freq', 'last_forecast_slot', 'buffer_slot_size', 'title', 'source')})
                 except Exception as e:
                     log('   netcdf not read:', e)
         except Exception as e:
-            log('grid ask', mode, 'failed:', e)
+            log('grid ask', mode, extra, 'failed:', e)
     return 0
 
 
