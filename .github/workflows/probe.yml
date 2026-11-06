@@ -20,3 +20,5 @@ jobs:
         continue-on-error: true
       - run: python3 grids.py --probe --only at
         continue-on-error: true
+      - run: python3 grids.py --probe --only thredds
+        continue-on-error: true

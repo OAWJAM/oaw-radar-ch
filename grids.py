@@ -289,6 +289,49 @@ def probe_norway():
     return 0
 
 
+def probe_thredds():
+    """MET Norway's THREDDS server (6 Nov, late): are the Nordic radar composites there as data — netCDF grids, no login — rather than
+    the rendered pictures of api.met.no? The catalogues named by the esd R package and the WeaMyL notes; the newest file's headers."""
+    cats = ['https://thredds.met.no/thredds/catalog/remotesensingradar/catalog.html',
+            'https://thredds.met.no/thredds/catalog/remotesensing/reflectivity-nordic/catalog.html',
+            'https://thredds.met.no/thredds/catalog/remotesensingradaraccr/catalog.html',
+            'https://thredds.met.no/thredds/catalog/remotesensing/catalog.html',
+            'https://thredds.met.no/thredds/catalog/radar/catalog.html',
+            'https://thredds.met.no/thredds/catalog.html']
+    for c in cats:
+        try:
+            r = requests.get(c, headers={'User-Agent': UA}, timeout=60)
+            names = re.findall(r'<a href="[^"]*">\s*<tt>([^<]+)</tt>', r.text) or re.findall(r'>([^<]{3,120}\.nc)<', r.text)
+            log('thredds', r.status_code, c, 'entries', len(names), names[:12], names[-6:] if len(names) > 12 else '')
+        except Exception as e:
+            log('thredds', c, 'failed:', e)
+    # the newest file of the reflectivity-nordic / remotesensingradar catalogue: walk one level (a year / month folder) and read the header
+    for base in ('https://thredds.met.no/thredds/catalog/remotesensingradar/', 'https://thredds.met.no/thredds/catalog/remotesensing/reflectivity-nordic/'):
+        try:
+            r = requests.get(base + 'catalog.html', headers={'User-Agent': UA}, timeout=60)
+            if r.status_code != 200:
+                continue
+            subs = re.findall(r'<a href="([^"]+/catalog\.html)">', r.text)
+            files = re.findall(r'dataset=([^"&]+\.nc)', r.text)
+            log('walk', base, 'subfolders', len(subs), subs[:4], subs[-3:], 'files here', len(files), files[-3:])
+            cur = base; depth = 0
+            while subs and depth < 3:
+                nxt = subs[-1] if 'catalog.html' in subs[-1] else subs[0]
+                cur = cur + nxt if not nxt.startswith('http') else nxt
+                r = requests.get(cur, headers={'User-Agent': UA}, timeout=60)
+                subs = re.findall(r'<a href="([^"]+/catalog\.html)">', r.text); files = re.findall(r'dataset=([^"&]+\.nc)', r.text)
+                log('walk', cur, r.status_code, 'subfolders', len(subs), subs[-3:], 'files', len(files), files[-3:]); depth += 1
+            if files:
+                f = files[-1]
+                das = requests.get('https://thredds.met.no/thredds/dodsC/' + f + '.das', headers={'User-Agent': UA}, timeout=60)
+                log('das', f, das.status_code, re.sub(r'\s+', ' ', das.text)[:1800])
+                dds = requests.get('https://thredds.met.no/thredds/dodsC/' + f + '.dds', headers={'User-Agent': UA}, timeout=60)
+                log('dds', dds.status_code, re.sub(r'\s+', ' ', dds.text)[:800])
+        except Exception as e:
+            log('walk', base, 'failed:', e)
+    return 0
+
+
 GEO = 'https://dataset.api.hub.geosphere.at/v1'
 
 
@@ -393,7 +436,7 @@ def main():
     a = ap.parse_args()
     only = [x for x in a.only.split(',') if x]
     if a.probe:
-        return probe() if (not only or 'se' in only) else (probe_austria() if 'at' in only else probe_norway())
+        return probe() if (not only or 'se' in only) else (probe_austria() if 'at' in only else (probe_thredds() if 'thredds' in only else probe_norway()))
     os.makedirs(a.out, exist_ok=True)
     for src in SOURCES:
         if only and src['id'] not in only:
