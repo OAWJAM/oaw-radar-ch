@@ -130,11 +130,37 @@ def write_sources(out, done):
     return lst
 
 
+def probe(only):
+    """For a look at a service: every layer of the capabilities that carries a time (name, default, the extent's tail) and the wanted layers' blocks."""
+    for src in SOURCES:
+        if only and src['id'] not in only:
+            continue
+        caps = capabilities(src['url'])
+        if not caps:
+            log(src['id'], 'no capabilities'); continue
+        log(src['id'], 'capabilities', len(caps), 'chars; layers with a time dimension:')
+        for m in re.finditer(r'<Name>([^<]+)</Name>(.{0,6000}?)(?=<Name>|</Layer>\s*</Layer>)', caps, re.S):
+            name, body = m.group(1), m.group(2)
+            t = re.search(r'<(Extent|Dimension)[^>]*name="time"([^>]*)>([^<]*)<', body, re.I)
+            if t and (name.find(':') > 0 or name.lower().find('radar') >= 0 or name.lower().find('rx') >= 0):
+                d = re.search(r'default="([^"]+)"', t.group(2)); ext = t.group(3).strip()
+                log('   ', name, '| default', d.group(1) if d else '-', '| extent …', ext[-60:] if ext else '-')
+        for layer in src['layers']:
+            i = caps.find('<Name>' + layer + '</Name>')
+            log('   wanted', layer, 'found' if i >= 0 else 'NOT in the capabilities', '| time:', layer_time(caps, layer))
+            if i >= 0:
+                log('   ', re.sub(r'\s+', ' ', caps[i:i + 700]))
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--out', default='site'); ap.add_argument('--frames', type=int, default=12)
     ap.add_argument('--only', default=''); ap.add_argument('--dry', action='store_true')
+    ap.add_argument('--probe', action='store_true', help='print what the capabilities say about the layers (which exist, which carry a time) and stop')
     a = ap.parse_args()
+    if a.probe:
+        return probe([x for x in a.only.split(',') if x])
     os.makedirs(a.out, exist_ok=True)
     only = [x for x in a.only.split(',') if x]
     done = set(); failed = []
