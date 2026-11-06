@@ -106,7 +106,9 @@ def read_geotiff(blob: bytes):
                 epsg = int(k[n + 3])
                 if k[n] == 3072:
                     break
-    return data, {'x0': x0, 'y0': y0, 'xs': xs, 'ys': ys, 'epsg': epsg or 3006, 'nodata': tags.get('GDAL_NODATA')}
+    if epsg in (None, 0, 32767):                       # user-defined in the file: SMHI documents SWEREF99 TM
+        epsg = 3006
+    return data, {'x0': x0, 'y0': y0, 'xs': xs, 'ys': ys, 'epsg': epsg, 'nodata': tags.get('GDAL_NODATA'), 'ascii': str(tags.get('GeoAsciiParamsTag', ''))[:200], 'keys': list(keys)[:40] if keys is not None else None}
 
 
 def smhi_rate(data: np.ndarray):
@@ -169,6 +171,15 @@ def probe():
         blob = get(r[1]).content
         data, frame = read_geotiff(blob)
         log('geotiff:', data.shape, data.dtype, 'frame', frame, 'values', int(data.min()), int(data.max()), 'nodata share', round(float(np.mean(data == 255)), 3))
+        inv = Transformer.from_crs(CRS.from_epsg(frame['epsg']), CRS.from_epsg(4326), always_xy=True)
+        h, w = data.shape
+        for name, (px, py) in (('top-left', (0, 0)), ('top-right', (w, 0)), ('bottom-left', (0, h)), ('bottom-right', (w, h)), ('centre', (w / 2, h / 2))):
+            lon, lat = inv.transform(frame['x0'] + px * frame['xs'], frame['y0'] - py * frame['ys'])
+            log('  corner', name, round(lon, 3), round(lat, 3))
+        rate = smhi_rate(data); wet = np.argwhere(rate >= 0.1)
+        if len(wet):
+            r0, c0 = wet.mean(axis=0); lon, lat = inv.transform(frame['x0'] + (c0 + .5) * frame['xs'], frame['y0'] - (r0 + .5) * frame['ys'])
+            log('  rain centroid', round(lon, 3), round(lat, 3), 'wet pixels', len(wet))
     return 0
 
 
