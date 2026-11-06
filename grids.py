@@ -221,8 +221,20 @@ def probe_austria():
                         v = j[k]; log('  ', k, (v[:3] + ['…'] + v[-3:]) if isinstance(v, list) and len(v) > 8 else v)
             except Exception as e:
                 log('metadata', mode, rid, 'failed:', e)
-    # small grid asks, netcdf: the newest run and the one before (forecast_offset=1) — which times, which lead times?
-    for mode, extra in (('forecast', {}), ('forecast', {'forecast_offset': 1}), ('historical', {'start': (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=2)).strftime('%Y-%m-%dT%H:%M'), 'end': dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M')})):
+    # small grid asks, netcdf: the newest run and the one before (forecast_offset=1) — which times, which lead times? Does start=end=reftime
+    # hand out the analysis step (lead 0), which the plain ask clips away as past?
+    try:
+        ref = get(GEO + '/grid/forecast/nowcast-v1-15min-1km/metadata').json().get('last_forecast_reftime', '')
+        reft = parse_time(ref)
+    except Exception as e:
+        log('reftime not read:', e); reft = dt.datetime.now(dt.timezone.utc).replace(minute=0, second=0, microsecond=0)
+    f = '%Y-%m-%dT%H:%M'
+    asks = (('forecast', {}), ('forecast', {'forecast_offset': 1}),
+            ('forecast', {'start': reft.strftime(f), 'end': reft.strftime(f)}),
+            ('forecast', {'start': reft.strftime(f), 'end': (reft + dt.timedelta(minutes=15)).strftime(f)}),
+            ('forecast', {'forecast_offset': 1, 'start': (reft - dt.timedelta(minutes=15)).strftime(f), 'end': (reft - dt.timedelta(minutes=15)).strftime(f)}),
+            ('historical', {'start': (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=2)).strftime(f), 'end': dt.datetime.now(dt.timezone.utc).strftime(f)}))
+    for mode, extra in asks:
         rid = 'inca-v1-15min-1km' if mode == 'historical' else 'nowcast-v1-15min-1km'
         try:
             r = requests.get(GEO + '/grid/%s/%s' % (mode, rid), params={'parameters': 'rr', 'bbox': '47.0,12.0,47.5,12.5', 'output_format': 'netcdf'} | extra, headers={'User-Agent': UA}, timeout=90)
