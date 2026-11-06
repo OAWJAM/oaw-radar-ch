@@ -135,7 +135,7 @@ def getmap(src, layer, when, size):
 
 
 def clear_background(png, with_mask=False):
-    """DWD paints the radar's reach as a half-transparent grey field with a magenta rim — on a chart that is a grey lid over Germany. The grey
+    """DWD paints what lies outside its composite's domain as a half-transparent grey field with a magenta rim — on a chart that is a grey lid. The grey
     (r = g = b, not opaque) and the rim (magenta, and its blends with the grey) go transparent; the rain colours are opaque and stay."""
     import io
     import numpy as np
@@ -146,7 +146,7 @@ def clear_background(png, with_mask=False):
     rim = (abs(r - 252) < 8) & (g < 12) & (abs(b - 255) < 8)
     blend = (al < 232) & (r > 110) & (b > 110) & (g < r - 12) & (g < b - 12) & (abs(r - b) < 12)      # the rim's blends with the grey: purple-grey, never opaque
     white = (r > 245) & (g > 245) & (b > 245)
-    reach = ((grey & (al > 0)) | rim | blend | ((al == 255) & ~white))                                 # the reach: the grey field (not the transparent outside, black too), its rim and the rain itself — never an opaque white outside (6 Nov, late — the coverage edge)
+    reach = ~((grey & (al > 0)) | rim | blend)                                                        # the reach (6 Nov, late — the coverage edge): DWD greys what lies OUTSIDE its composite's domain (the corners are grey, Germany transparent), so the reach is everything but the grey field and its rim
     if with_mask:
         n = a.shape[0] * a.shape[1]
         print('   clear_background: grey %.3f rim %.3f blend %.3f opaque %.3f transparent %.3f white %.3f reach %.3f corners %s' % (
