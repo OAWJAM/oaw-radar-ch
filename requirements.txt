@@ -6,3 +6,4 @@ requests>=2.31
 tifffile>=2024.1
 imagecodecs>=2024.1
 netCDF4>=1.6
+scikit-image>=0.22

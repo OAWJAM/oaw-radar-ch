@@ -339,6 +339,8 @@ def run_nordic(src, a):
             field[np.isfinite(field) & (field < 0.1)] = 0.0
             img = convert.paint(field)
             wet = float(np.nanmean(field >= 0.1)) if np.isfinite(field).any() else 0.0
+            if not os.path.exists(d + '/coverage.json') or stamp.minute % 30 == 0:
+                convert.write_coverage(d, np.isfinite(field), src['bbox'], step, src['source'])           # the reach's edge from is_nodata (6 Nov, late)
             k, n = write_frames(a.out, src, stamp, img, a.frames, {'wet_share': round(wet, 4), 'width': size[0], 'height': size[1], 'step_deg': step, 'url': THREDDS + '/dodsC/' + path, 'note': src.get('note', ''), 'radars': info.get('nodes', '')})
             log('  done', k, size, 'wet share', round(wet, 4), 'frames', n, 'nodata share', info['nodata_share']); got += 1
         except Exception as e:
@@ -554,6 +556,8 @@ def main():
                     field, size = reproject_grid(rate, frame, src['bbox'], a.step)
                     img = convert.paint(field)
                     wet = float(np.nanmean(field >= 0.1)) if np.isfinite(field).any() else 0.0
+                    if not os.path.exists(d + '/coverage.json') or stamp.minute % 30 == 0:
+                        convert.write_coverage(d, np.isfinite(field), src['bbox'], a.step, src['source'])      # the reach's edge (6 Nov, late)
                     k, n = write_frames(a.out, src, stamp, img, a.frames, {'wet_share': round(wet, 4), 'width': size[0], 'height': size[1], 'step_deg': a.step, 'url': href})
                     log('  done', k, size, 'wet share', round(wet, 4), 'frames', n); got += 1
                 except Exception as e:

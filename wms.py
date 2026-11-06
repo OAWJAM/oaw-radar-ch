@@ -128,10 +128,13 @@ def getmap(src, layer, when, size):
     if body[:4] != b'\x89PNG':
         exc = re.search(r'<ServiceException[^>]*>([^<]{1,300})', body.decode('utf-8', 'replace'))
         raise RuntimeError('not a picture: ' + (exc.group(1).strip() if exc else body[:120].decode('utf-8', 'replace')))
-    return clear_background(body) if src.get('clear') else body
+    if src.get('clear'):
+        body, reach = clear_background(body, True)
+        src['_reach'] = reach
+    return body
 
 
-def clear_background(png):
+def clear_background(png, with_mask=False):
     """DWD paints the radar's reach as a half-transparent grey field with a magenta rim — on a chart that is a grey lid over Germany. The grey
     (r = g = b, not opaque) and the rim (magenta, and its blends with the grey) go transparent; the rain colours are opaque and stay."""
     import io
@@ -142,9 +145,10 @@ def clear_background(png):
     grey = (abs(r - g) < 4) & (abs(g - b) < 4) & (al < 255)
     rim = (abs(r - 252) < 8) & (g < 12) & (abs(b - 255) < 8)
     blend = (al < 232) & (r > 110) & (b > 110) & (g < r - 12) & (g < b - 12) & (abs(r - b) < 12)      # the rim's blends with the grey: purple-grey, never opaque
+    reach = grey | rim | blend | (al == 255)                                                          # the reach: the grey field, its rim and the rain itself (6 Nov, late — the coverage edge)
     a[grey | rim | blend] = (0, 0, 0, 0)
     out = io.BytesIO(); Image.fromarray(a, 'RGBA').save(out, 'PNG', optimize=True)
-    return out.getvalue()
+    return (out.getvalue(), reach) if with_mask else out.getvalue()
 
 
 def write_frames(out, src, stamp, png, keep):
@@ -261,6 +265,9 @@ def main():
                     error = str(e); log('  failed', key, ':', error); break
                 k, n = write_frames(a.out, src, stamp, png, a.frames)
                 log('  done', k, len(png), 'bytes, frames', n); got += 1; error = ''
+                if src.get('_reach') is not None and (tried == 1):                                        # the reach's edge from the newest picture (6 Nov, late)
+                    import convert
+                    convert.write_coverage(a.out + '/' + src['id'], src.pop('_reach'), src['bbox'], STEP_DEG, src['source'])
             if got:
                 done.add(src['id']); error = ''
                 if tried == 0:

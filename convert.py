@@ -145,6 +145,46 @@ def paint(field: np.ndarray) -> Image.Image:
     return Image.fromarray(rgba, 'RGBA')
 
 
+def coverage_rings(valid: np.ndarray, bbox, step: float, coarse: float = 0.1, min_len: int = 12):
+    """The edge of a source's reach as rings of [lon, lat] (6 Nov, late — the owner: «a thin line around the area a radar covers»):
+    the valid mask (True where the radar sees, rain or none) coarsened to `coarse` degrees by majority, its 0.5 contour traced,
+    rings shorter than min_len points dropped. The boards draw the rings as thin lines under the pictures."""
+    from skimage import measure
+    W, S, E, N = bbox
+    ny, nx = valid.shape
+    f = max(1, int(round(coarse / step)))
+    cy, cx = ny // f, nx // f
+    if cy < 2 or cx < 2:
+        return []
+    m = valid[:cy * f, :cx * f].reshape(cy, f, cx, f).mean(axis=(1, 3)) >= 0.5
+    pad = np.zeros((cy + 2, cx + 2), dtype=float); pad[1:-1, 1:-1] = m
+    rings = []
+    for c in measure.find_contours(pad, 0.5):
+        if len(c) < min_len:
+            continue
+        pts = [[round(W + (col - 1 + 0.5) * f * step, 3), round(N - (row - 1 + 0.5) * f * step, 3)] for row, col in c[::2]]
+        if pts and pts[0] != pts[-1]:
+            pts.append(pts[0])
+        rings.append(pts)
+    return rings
+
+
+def write_coverage(out: str, valid: np.ndarray, bbox, step: float, source: str):
+    """coverage.json beside frames.json: the rings of the reach; written only when the mask says something (a source whose
+    picture carries no no-data mark writes none)."""
+    try:
+        rings = coverage_rings(valid, bbox, step)
+    except Exception as e:
+        log('coverage not traced:', e); return 0
+    if not rings:
+        return 0
+    W, S, E, N = bbox
+    json.dump({'source': source, 'bbox': {'west': W, 'south': S, 'east': E, 'north': N}, 'crs': 'EPSG:4326', 'rings': rings,
+               'note': 'the edge of the area the radars see (rain or none); traced from the pictures\' no-data mask at a tenth of a degree'},
+              open(out + '/coverage.json', 'w'))
+    return len(rings)
+
+
 def convert_one(a, blob, name, href, stamp, now):
     """One picture: ODIM → the painted PNG under frames/, latest.png and latest.json. Returns (key, size, wet share)."""
     rate, grid, scale, quantity = read_odim(blob)
@@ -154,6 +194,8 @@ def convert_one(a, blob, name, href, stamp, now):
     img.save(a.out + '/frames/' + key + '.png', optimize=True)
     img.save(a.out + '/latest.png', optimize=True)
     wet = float(np.nanmean(field >= 0.1)) if np.isfinite(field).any() else 0.0
+    if not os.path.exists(a.out + '/coverage.json') or stamp.minute % 30 == 0:                      # the reach changes only with the radars: traced twice an hour
+        write_coverage(a.out, np.isfinite(field), bbox, a.step, 'MeteoSwiss')
     meta = {'product': a.product.upper(), 'quantity': quantity, 'file': name, 'source': 'MeteoSwiss', 'licence': 'CC-BY, Source: MeteoSwiss',
             'time': stamp.strftime('%Y-%m-%dT%H:%MZ'), 'converted': now.strftime('%Y-%m-%dT%H:%M:%SZ'), 'bbox': {'west': bbox[0], 'south': bbox[1], 'east': bbox[2], 'north': bbox[3]},
             'crs': 'EPSG:4326', 'width': size[0], 'height': size[1], 'step_deg': a.step, 'scale': scale, 'wet_share': round(wet, 4),
