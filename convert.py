@@ -169,6 +169,26 @@ def coverage_rings(valid: np.ndarray, bbox, step: float, coarse: float = 0.1, mi
     return rings
 
 
+# MeteoSwiss' five radars and their 246 km reach: the composite's grid carries no no-data mark of its own (a dry cell is 0 inside and outside
+# the reach), so the coverage edge is the union of the circles, clipped to the product's grid — as the MeteoSwiss app draws it
+CH_RADARS = [(47.2843, 8.5120), (46.4251, 6.0995), (46.0408, 8.8334), (46.3706, 7.4866), (46.8351, 9.7944)]   # Albis, La Dôle, Monte Lema, Plaine Morte, Weissfluhgipfel
+CH_REACH_KM = 246.0
+
+
+def swiss_reach(shape, bbox):
+    ny, nx = shape
+    W, S, E, N = bbox
+    lons = W + (np.arange(nx) + 0.5) * (E - W) / nx
+    lats = N - (np.arange(ny) + 0.5) * (N - S) / ny
+    LON, LAT = np.meshgrid(np.radians(lons), np.radians(lats))
+    ok = np.zeros(shape, dtype=bool)
+    for la, lo in CH_RADARS:
+        la, lo = np.radians(la), np.radians(lo)
+        h = np.sin((LAT - la) / 2) ** 2 + np.cos(LAT) * np.cos(la) * np.sin((LON - lo) / 2) ** 2
+        ok |= 2 * 6371.0 * np.arcsin(np.sqrt(h)) <= CH_REACH_KM
+    return ok
+
+
 def write_coverage(out: str, valid: np.ndarray, bbox, step: float, source: str):
     """coverage.json beside frames.json: the rings of the reach; written only when the mask says something (a source whose
     picture carries no no-data mark writes none)."""
@@ -195,7 +215,7 @@ def convert_one(a, blob, name, href, stamp, now):
     img.save(a.out + '/latest.png', optimize=True)
     wet = float(np.nanmean(field >= 0.1)) if np.isfinite(field).any() else 0.0
     if not os.path.exists(a.out + '/coverage.json') or stamp.minute % 30 == 0:                      # the reach changes only with the radars: traced twice an hour
-        write_coverage(a.out, np.isfinite(field), bbox, a.step, 'MeteoSwiss')
+        write_coverage(a.out, np.isfinite(field) & swiss_reach(field.shape, bbox), bbox, a.step, 'MeteoSwiss')
     meta = {'product': a.product.upper(), 'quantity': quantity, 'file': name, 'source': 'MeteoSwiss', 'licence': 'CC-BY, Source: MeteoSwiss',
             'time': stamp.strftime('%Y-%m-%dT%H:%MZ'), 'converted': now.strftime('%Y-%m-%dT%H:%M:%SZ'), 'bbox': {'west': bbox[0], 'south': bbox[1], 'east': bbox[2], 'north': bbox[3]},
             'crs': 'EPSG:4326', 'width': size[0], 'height': size[1], 'step_deg': a.step, 'scale': scale, 'wet_share': round(wet, 4),

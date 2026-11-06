@@ -145,7 +145,7 @@ def clear_background(png, with_mask=False):
     grey = (abs(r - g) < 4) & (abs(g - b) < 4) & (al < 255)
     rim = (abs(r - 252) < 8) & (g < 12) & (abs(b - 255) < 8)
     blend = (al < 232) & (r > 110) & (b > 110) & (g < r - 12) & (g < b - 12) & (abs(r - b) < 12)      # the rim's blends with the grey: purple-grey, never opaque
-    reach = grey | rim | blend | (al == 255)                                                          # the reach: the grey field, its rim and the rain itself (6 Nov, late — the coverage edge)
+    reach = ((grey & (al > 0)) | rim | blend | (al == 255))                                          # the reach: the grey field (not the transparent outside, which is black too), its rim and the rain itself (6 Nov, late — the coverage edge)
     a[grey | rim | blend] = (0, 0, 0, 0)
     out = io.BytesIO(); Image.fromarray(a, 'RGBA').save(out, 'PNG', optimize=True)
     return (out.getvalue(), reach) if with_mask else out.getvalue()
