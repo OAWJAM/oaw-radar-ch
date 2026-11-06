@@ -1,0 +1,5 @@
+numpy>=1.26
+h5py>=3.10
+pyproj>=3.6
+Pillow>=10.0
+requests>=2.31
