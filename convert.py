@@ -189,6 +189,18 @@ def swiss_reach(shape, bbox):
     return ok
 
 
+COVERAGE_V = 3                                                                   # bump to have every source trace its edge afresh on the next pass
+
+
+def coverage_stale(out: str, stamp) -> bool:
+    """Trace again when there is no coverage.json, when it is from an older tracing, or on the half hour (the reach changes only with the radars)."""
+    try:
+        j = json.load(open(out + '/coverage.json'))
+        return int(j.get('v', 0)) != COVERAGE_V or stamp.minute % 30 == 0
+    except Exception:
+        return True
+
+
 def write_coverage(out: str, valid: np.ndarray, bbox, step: float, source: str):
     """coverage.json beside frames.json: the rings of the reach; written only when the mask says something (a source whose
     picture carries no no-data mark writes none)."""
@@ -199,7 +211,7 @@ def write_coverage(out: str, valid: np.ndarray, bbox, step: float, source: str):
     if not rings:
         return 0
     W, S, E, N = bbox
-    json.dump({'source': source, 'bbox': {'west': W, 'south': S, 'east': E, 'north': N}, 'crs': 'EPSG:4326', 'rings': rings,
+    json.dump({'v': COVERAGE_V, 'source': source, 'bbox': {'west': W, 'south': S, 'east': E, 'north': N}, 'crs': 'EPSG:4326', 'rings': rings,
                'note': 'the edge of the area the radars see (rain or none); traced from the pictures\' no-data mask at a tenth of a degree'},
               open(out + '/coverage.json', 'w'))
     return len(rings)
@@ -214,7 +226,7 @@ def convert_one(a, blob, name, href, stamp, now):
     img.save(a.out + '/frames/' + key + '.png', optimize=True)
     img.save(a.out + '/latest.png', optimize=True)
     wet = float(np.nanmean(field >= 0.1)) if np.isfinite(field).any() else 0.0
-    if not os.path.exists(a.out + '/coverage.json') or stamp.minute % 30 == 0:                      # the reach changes only with the radars: traced twice an hour
+    if coverage_stale(a.out, stamp):                                                               # the reach changes only with the radars: traced twice an hour
         write_coverage(a.out, np.isfinite(field) & swiss_reach(field.shape, bbox), bbox, a.step, 'MeteoSwiss')
     meta = {'product': a.product.upper(), 'quantity': quantity, 'file': name, 'source': 'MeteoSwiss', 'licence': 'CC-BY, Source: MeteoSwiss',
             'time': stamp.strftime('%Y-%m-%dT%H:%MZ'), 'converted': now.strftime('%Y-%m-%dT%H:%M:%SZ'), 'bbox': {'west': bbox[0], 'south': bbox[1], 'east': bbox[2], 'north': bbox[3]},

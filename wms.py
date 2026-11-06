@@ -145,7 +145,7 @@ def clear_background(png, with_mask=False):
     grey = (abs(r - g) < 4) & (abs(g - b) < 4) & (al < 255)
     rim = (abs(r - 252) < 8) & (g < 12) & (abs(b - 255) < 8)
     blend = (al < 232) & (r > 110) & (b > 110) & (g < r - 12) & (g < b - 12) & (abs(r - b) < 12)      # the rim's blends with the grey: purple-grey, never opaque
-    reach = ((grey & (al > 0)) | rim | blend | (al == 255))                                          # the reach: the grey field (not the transparent outside, which is black too), its rim and the rain itself (6 Nov, late — the coverage edge)
+    reach = ((grey & (al > 0)) | rim | blend | ((al == 255) & ~((r > 245) & (g > 245) & (b > 245))))   # the reach: the grey field (not the transparent outside, black too), its rim and the rain itself — never an opaque white outside (6 Nov, late — the coverage edge)
     a[grey | rim | blend] = (0, 0, 0, 0)
     out = io.BytesIO(); Image.fromarray(a, 'RGBA').save(out, 'PNG', optimize=True)
     return (out.getvalue(), reach) if with_mask else out.getvalue()
@@ -265,9 +265,11 @@ def main():
                     error = str(e); log('  failed', key, ':', error); break
                 k, n = write_frames(a.out, src, stamp, png, a.frames)
                 log('  done', k, len(png), 'bytes, frames', n); got += 1; error = ''
-                if src.get('_reach') is not None and (tried == 1):                                        # the reach's edge from the newest picture (6 Nov, late)
+                if src.get('_reach') is not None:                                                        # the reach's edge from the newest picture fetched (6 Nov, late)
                     import convert
-                    convert.write_coverage(a.out + '/' + src['id'], src.pop('_reach'), src['bbox'], STEP_DEG, src['source'])
+                    reach = src.pop('_reach')
+                    if convert.coverage_stale(a.out + '/' + src['id'], stamp) or tried == 1:
+                        convert.write_coverage(a.out + '/' + src['id'], reach, src['bbox'], STEP_DEG, src['source'])
             if got:
                 done.add(src['id']); error = ''
                 if tried == 0:
