@@ -16,6 +16,8 @@ jobs:
   convert:
     runs-on: ubuntu-latest
     timeout-minutes: 8
+    outputs:
+      pages: ${{ steps.pages.outcome == 'success' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -37,14 +39,15 @@ jobs:
         with:
           path: site
           key: radar-site-${{ github.run_id }}
-      - uses: actions/configure-pages@v5          # switches Pages to the Actions source on the first run, so nothing is to be clicked
-        with:
-          enablement: true
+      - uses: actions/configure-pages@v5          # until Pages is switched on (Settings → Pages → Source: GitHub Actions) this step is skipped over, the run stays green
+        id: pages
+        continue-on-error: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
   deploy:
     needs: convert
+    if: needs.convert.outputs.pages == 'true'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
