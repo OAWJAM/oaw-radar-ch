@@ -37,6 +37,9 @@ jobs:
         with:
           path: site
           key: radar-site-${{ github.run_id }}
+      - uses: actions/configure-pages@v5          # switches Pages to the Actions source on the first run, so nothing is to be clicked
+        with:
+          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
