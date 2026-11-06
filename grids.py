@@ -159,6 +159,31 @@ def write_frames(out, src, stamp, img, keep, extra):
     return key, len(frames)
 
 
+def probe_norway():
+    """MET Norway: the api.met.no radar picture of an area and the area's metadata page (projection, extent) — do they fit?"""
+    for area in ('nordic', 'norway', 'southern_norway'):
+        for typ in ('reflectivity', '5level_reflectivity'):
+            try:
+                r = requests.get('https://api.met.no/weatherapi/radar/2.0/', params={'area': area, 'type': typ, 'content': 'image'}, headers={'User-Agent': UA}, timeout=60)
+                ok = r.status_code == 200 and r.content[:4] == b'\x89PNG'
+                size = Image.open(io.BytesIO(r.content)).size if ok else None
+                log('api.met.no', area, typ, r.status_code, r.headers.get('content-type'), 'size', size, 'last-modified', r.headers.get('last-modified'), 'bytes', len(r.content))
+                if ok:
+                    im = Image.open(io.BytesIO(r.content)).convert('RGBA'); a = np.array(im)
+                    log('   alpha share', round(float(np.mean(a[..., 3] > 0)), 3), 'distinct colours', len(np.unique(a.reshape(-1, 4), axis=0)))
+            except Exception as e:
+                log('api.met.no', area, typ, 'failed:', e)
+        for prod in ('reflectivity', '5level_reflectivity'):
+            try:
+                r = requests.get('https://radarapi.met.no/display-area-metadata/%s/%s' % (area, prod), headers={'User-Agent': UA}, timeout=60)
+                txt = re.sub(r'<[^>]+>', ' ', r.text); txt = re.sub(r'\s+', ' ', txt)
+                m = re.search(r'\+proj=[^"<]{0,200}', r.text)
+                log('radarapi', area, prod, r.status_code, 'proj', m.group(0) if m else None, 'text', txt[:600])
+            except Exception as e:
+                log('radarapi', area, prod, 'failed:', e)
+    return 0
+
+
 def probe():
     j = get(SMHI).json()
     log('smhi keys:', list(j.keys()))
@@ -190,7 +215,7 @@ def main():
     ap.add_argument('--probe', action='store_true'); ap.add_argument('--file', help='a local GeoTIFF instead of the download (for a try)')
     a = ap.parse_args()
     if a.probe:
-        return probe()
+        return probe() if (not only or 'se' in only) else probe_norway()
     os.makedirs(a.out, exist_ok=True)
     only = [x for x in a.only.split(',') if x]
     for src in SOURCES:

@@ -18,3 +18,5 @@ jobs:
       - run: python3 wms.py --probe
       - run: python3 grids.py --probe
         continue-on-error: true
+      - run: python3 grids.py --probe --only no
+        continue-on-error: true
