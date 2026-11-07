@@ -27,6 +27,9 @@ jobs:
       # ČHMÚ (7 Nov, the owner: «CZ ja»): the portal's licence lines, the newest MAX_Z files, one file's HDF5 layout
       - run: python3 grids.py --probe --only cz
         continue-on-error: true
+      # Italy (7 Nov, the owner: «Italien go»): the Protezione Civile platform — the licence lines, the newest products, the download with and without the Origin header, the GeoTIFF's frame
+      - run: python3 grids.py --probe --only it
+        continue-on-error: true
       # the two chart sources the boards read (7 Nov): ECMWF Open Charts' answers (run, areas, levels), MET Norway's sigcharts list shape
       - run: python3 probe_charts.py
         continue-on-error: true
