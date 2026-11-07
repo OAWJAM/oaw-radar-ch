@@ -42,6 +42,8 @@ SOURCES = [
     {'id': 'es', 'kind': 'aemet', 'name': 'Spain', 'source': 'AEMET', 'licence': 'AEMET OpenData, Source: AEMET', 'product': 'National radar composite (picture)', 'bbox': (-10.0, 35.0, 5.0, 44.5), 'step_min': 10, 'step': 0.02,
      'secret': 'AEMET_API_KEY', 'probe_only': True,
      'note': 'AEMET\'s national radar composite from OpenData (api/red/radar/nacional) — a picture, georeferenced by hand; the key is the repository secret AEMET_API_KEY (7 Nov 22:39; the first pass keeps the raw picture as es/_probe.png for the calibration)'},
+    {'id': 'is', 'kind': 'imo', 'name': 'Iceland', 'source': 'Icelandic Meteorological Office', 'licence': 'IMO conditions of use (free, with attribution and date), Source: Icelandic Meteorological Office', 'product': 'Radar pictures (probe)', 'bbox': (-26.0, 62.5, -12.0, 67.5), 'step_min': 10, 'step': 0.02, 'probe_only': True,
+     'note': 'the IMO radar pictures (vedur.is) — a first look for the owner\'s example (8 Nov 00:09); no frames yet'},
     {'id': 'it', 'kind': 'dpc', 'name': 'Italy', 'source': 'Radar-DPC', 'licence': 'CC BY-SA, Source: Radar-DPC (Dipartimento della Protezione Civile)', 'product': 'National radar mosaic (SRI, rain intensity; VMI when SRI is missing)',
      'bbox': (6.0, 35.5, 19.0, 47.5), 'step_min': 5, 'step': 0.01,
      'note': 'Radar-DPC, the national mosaic of the Dipartimento della Protezione Civile (radar-api.protezionecivile.it, docs dpc-radar.readthedocs.io): the newest product as a GeoTIFF on a 1 km Transverse Mercator grid, asked with the platform\'s own origin header; the docs name CC BY-SA with «Radar-DPC» as the source (7 Nov, the owner: «Italien go»)'},
@@ -897,6 +899,44 @@ def run_aemet(src, a):
     raise RuntimeError('the AEMET reader is not written yet')
 
 
+def run_imo_probe(src, a):
+    """Iceland, a first look (the owner, 8 Nov 00:09: «Mache ein Beispiel für Island»): the IMO radar page is script-built, so the runner reads the
+    page and its scripts for the picture addresses, keeps the first pictures under is/ as _probe_<n>.png and logs what it found. No frames."""
+    d = a.out + '/' + src['id']; os.makedirs(d, exist_ok=True)
+    found = []
+    for url in ('https://en.vedur.is/weather/observations/radar/', 'https://www.vedur.is/vedur/athuganir/vedurratsja/'):
+        try:
+            r = requests.get(url, headers={'User-Agent': UA}, timeout=60)
+            log(src['id'], 'page', url, r.status_code, len(r.text))
+            for m in re.findall(r'https?://[^"\'\s<>]+\.(?:png|gif|jpg)', r.text):
+                if m not in found: found.append(m)
+            for m in re.findall(r'["\']((?:/[^"\'\s<>]+)?/(?:photos|myndir|radar|ratsja)[^"\'\s<>]*\.(?:png|gif|jpg))["\']', r.text):
+                u = 'https://en.vedur.is' + m if m.startswith('/') else m
+                if u not in found: found.append(u)
+            for js in re.findall(r'<script[^>]+src="([^"]+)"', r.text)[:12]:
+                ju = js if js.startswith('http') else ('https://en.vedur.is' + js if js.startswith('/') else url + js)
+                try:
+                    rj = requests.get(ju, headers={'User-Agent': UA}, timeout=60)
+                    hits = re.findall(r'https?://[^"\'\s<>]+(?:radar|ratsja)[^"\'\s<>]*', rj.text)
+                    if hits: log(src['id'], 'script', ju, 'names', hits[:6])
+                except Exception as e:
+                    log(src['id'], 'script', ju, 'failed:', e)
+        except Exception as e:
+            log(src['id'], 'page failed:', url, e)
+    log(src['id'], 'pictures named by the page:', found[:20])
+    n = 0
+    for u in found[:6]:
+        try:
+            r = requests.get(u, headers={'User-Agent': UA, 'Referer': 'https://en.vedur.is/'}, timeout=60)
+            if r.status_code != 200 or len(r.content) < 2000: log(src['id'], 'picture', u, r.status_code, len(r.content)); continue
+            im = Image.open(io.BytesIO(r.content)); log(src['id'], 'picture', u, im.format, im.mode, im.size)
+            im.convert('RGBA').save(d + '/_probe_%d.png' % n); n += 1
+        except Exception as e:
+            log(src['id'], 'picture failed:', u, e)
+    json.dump({'ok': False, 'probe': True, 'found': found[:20], 'kept': n, 'at': dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}, open(d + '/status.json', 'w'), indent=1)
+    return 0
+
+
 def nordic_files(n=12):
     """The newest n files of the Nordic composite in the THREDDS folder latest/ (two days of 5-min files), oldest first: [(stamp, path)]."""
     r = get(NORDIC_CAT)
@@ -1192,9 +1232,9 @@ def main():
         if src.get('await_probe') and src['id'] not in only:
             log(src['id'], 'waits for its probe —', src['await_probe']); continue
         d = a.out + '/' + src['id']; os.makedirs(d, exist_ok=True)
-        if src.get('kind') in ('geosphere', 'nordic', 'dmi', 'knmi', 'meteofrance', 'chmi', 'dpc', 'aemet'):
+        if src.get('kind') in ('geosphere', 'nordic', 'dmi', 'knmi', 'meteofrance', 'chmi', 'dpc', 'aemet', 'imo'):
             try:
-                {'geosphere': run_geosphere, 'nordic': run_nordic, 'dmi': run_dmi, 'knmi': run_knmi, 'meteofrance': run_meteofrance, 'chmi': run_chmi, 'dpc': run_dpc, 'aemet': run_aemet}[src['kind']](src, a)
+                {'geosphere': run_geosphere, 'nordic': run_nordic, 'dmi': run_dmi, 'knmi': run_knmi, 'meteofrance': run_meteofrance, 'chmi': run_chmi, 'dpc': run_dpc, 'aemet': run_aemet, 'imo': run_imo_probe}[src['kind']](src, a)
             except Exception as e:
                 log(src['id'], 'failed:', e)
                 json.dump({'ok': False, 'error': str(e)[:300], 'at': dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}, open(d + '/status.json', 'w'), indent=1)
