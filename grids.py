@@ -443,9 +443,9 @@ def dpc_frame(frame):
     """The GeoTIFF's frame with the platform's custom Transverse Mercator where the file names no EPSG of its own (the SMHI fallback in read_geotiff
     would say SWEREF99 TM): the docs' gdalinfo shows lat_0 42, lon_0 12.5, false easting/northing 0, 1 km pixels from (-600000, 650000)."""
     f = dict(frame)
-    if f.get('epsg') == 4326:                                                   # the CUM products come in plain lon/lat
-        f.pop('crs', None)
-    else:                                                                       # VMI, SRI and the rest: the custom TM (the file's keys say user-defined; read_geotiff's fallback would be SMHI's 3006)
+    if abs(float(f.get('x0', 0.0))) <= 360.0 and abs(float(f.get('xs', 0.0))) < 1.0:   # the CUM products come in plain lon/lat (degrees)
+        f.pop('crs', None); f['epsg'] = 4326
+    else:                                                                       # VMI, SRI and the rest: metres from (-600000, 650000) — the custom TM; the file's keys name WGS 84 as the datum (2048 = 4326) and a user-defined TM (3075 = 1), which read_geotiff reads as «EPSG 4326»
         f['crs'] = DPC_TM
     return f
 
@@ -494,7 +494,7 @@ def run_dpc(src, a):
             field[np.isfinite(field) & (field < 0.1)] = 0.0
             img = convert.paint(field)
             wet = float(np.nanmean(field >= 0.1)) if np.isfinite(field).any() else 0.0
-            if convert.coverage_stale(d, stamp):
+            if product == 'SRI' and convert.coverage_stale(d, stamp):                  # SRI keeps 0.0 where a radar sees dry ground and -9999 beyond the reach; VMI masks everything under 10 dBZ, so its blanks say nothing about the reach
                 convert.write_coverage(d, np.isfinite(field), src['bbox'], step, src['source'])
             k, n = write_frames(a.out, src, stamp, img, a.frames, {'wet_share': round(wet, 4), 'width': size[0], 'height': size[1], 'step_deg': step, 'url': DPC_API, 'note': src.get('note', ''), 'quantity': product, 'crs': frame.get('crs') or ('EPSG:%s' % frame.get('epsg'))})
             log('  done', k, size, 'wet share', round(wet, 4), 'frames', n, 'product', product, 'epsg', frame.get('epsg')); return 1
@@ -543,7 +543,16 @@ def probe_dpc():
         blob, ctype, key = dpc_download('SRI', t_raw)
         data, frame = read_geotiff(blob)
         v = data.astype(np.float32); fin = v[np.isfinite(v) & (v > -999)]
-        log('SRI geotiff:', data.shape, data.dtype, {k: frame[k] for k in ('x0', 'y0', 'xs', 'ys', 'epsg', 'nodata')}, 'valid values min %.2f max %.2f, share >= 0.1 mm/h %.3f' % (float(fin.min()), float(fin.max()), float(np.mean(v >= 0.1))))
+        log('SRI geotiff:', data.shape, data.dtype, {k: frame[k] for k in ('x0', 'y0', 'xs', 'ys', 'epsg', 'nodata')}, 'valid values min %.2f max %.2f, share > -999 (the reach) %.3f, share >= 0.1 mm/h %.3f' % (float(fin.min()), float(fin.max()), float(np.mean(v > -999)), float(np.mean(v >= 0.1))))
+        f2 = dpc_frame(frame); rate = dpc_rate(data, f2, 'SRI')
+        field, size = reproject_grid(rate, f2, (6.0, 35.5, 19.0, 47.5), 0.02)
+        fin2 = np.isfinite(field)
+        rows = np.where(fin2.any(axis=1))[0]; cols = np.where(fin2.any(axis=0))[0]
+        log('  SRI on the lon/lat grid (0.02°):', size, 'share with data %.3f, share wet %.3f' % (float(np.mean(fin2)), float(np.nanmean(field >= 0.1)) if fin2.any() else 0.0), 'crs', f2.get('crs'),
+            'data rows %d–%d of %d, cols %d–%d of %d' % (rows.min(), rows.max(), size[1], cols.min(), cols.max(), size[0]) if rows.size else 'no data cell')
+        # the reach as a rough picture: every tenth cell, # = data, . = none (south at the bottom)
+        for r in range(0, field.shape[0], 40):
+            log('  ', ''.join('#' if fin2[r, c] else '.' for c in range(0, field.shape[1], 12)))
     except Exception as e:
         log('SRI failed:', e)
     return 0
