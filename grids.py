@@ -861,14 +861,20 @@ def run_aemet(src, a):
     if not key:
         log(src['id'], 'skipped — no secret', src['secret']); return 0
     d = a.out + '/' + src['id']
-    r = requests.get(AEMET, headers={'api_key': key, 'Accept': 'application/json', 'User-Agent': UA}, params={'api_key': key}, timeout=60)
-    log(src['id'], 'api', r.status_code, r.headers.get('content-type'), len(r.content), 'bytes')
-    try:
-        j = r.json()
-    except ValueError:
-        raise RuntimeError('the AEMET API answered %d without JSON: %s' % (r.status_code, re.sub(r'\s+', ' ', r.text[:160])))
-    if r.status_code != 200 or int(j.get('estado', 0) or 0) != 200 or not j.get('datos'):
-        raise RuntimeError('the AEMET API answered %d: estado %s — %s' % (r.status_code, j.get('estado'), j.get('descripcion', '')))
+    j = None; last = ''
+    for url in (AEMET, AEMET, AEMET, AEMET.replace('/nacional', '/regional/pm')):                         # the OpenData gateway answers «estado 404 — Error al obtener los datos» now and then (7 Nov 22:57): three tries, then one regional radar (Palma) to tell a key problem from a product problem
+        r = requests.get(url, headers={'api_key': key, 'Accept': 'application/json', 'User-Agent': UA}, params={'api_key': key}, timeout=60)
+        log(src['id'], 'api', url.rsplit('/radar/', 1)[-1], r.status_code, r.headers.get('content-type'), len(r.content), 'bytes', re.sub(r'\s+', ' ', r.text[:160]))
+        try:
+            jj = r.json()
+        except ValueError:
+            last = 'the AEMET API answered %d without JSON: %s' % (r.status_code, re.sub(r'\s+', ' ', r.text[:160])); time.sleep(20); continue
+        if r.status_code == 200 and int(jj.get('estado', 0) or 0) == 200 and jj.get('datos'):
+            j = jj; break
+        last = 'the AEMET API answered %d: estado %s — %s' % (r.status_code, jj.get('estado'), jj.get('descripcion', ''))
+        time.sleep(20)
+    if j is None:
+        raise RuntimeError(last)
     r2 = requests.get(j['datos'], headers={'User-Agent': UA}, timeout=120)
     log(src['id'], 'datos', r2.status_code, r2.headers.get('content-type'), len(r2.content), 'bytes', 'last-modified', r2.headers.get('last-modified'))
     r2.raise_for_status()
