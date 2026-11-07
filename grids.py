@@ -34,8 +34,8 @@ SOURCES = [
      'note': 'DMI\'s radar composite from the open data API (no key since 2026 — «neither registration, nor API key are needed»), ODIM HDF5 every 5 min (6 Nov, late)'},
     {'id': 'nl', 'kind': 'knmi', 'name': 'Netherlands', 'source': 'KNMI', 'licence': 'CC BY 4.0, Source: KNMI', 'product': 'Radar reflectivity composite', 'bbox': (0.0, 49.5, 10.5, 55.5), 'step_min': 5, 'step': 0.02,
      'secret': 'KNMI_API_KEY', 'note': 'KNMI\'s radar reflectivity composite (RAD_NL25_PCP_NA, 1 km, every 5 min) from the Data Platform — the key is the repository secret KNMI_API_KEY (6 Nov, late)'},
-    {'id': 'fr', 'kind': 'meteofrance', 'name': 'France', 'source': 'M\u00e9t\u00e9o-France', 'licence': 'Licence Ouverte 2.0, Source: M\u00e9t\u00e9o-France', 'product': 'Radar mosaic', 'bbox': (-6.0, 41.0, 10.5, 51.5), 'step_min': 5, 'step': 0.02,
-     'secret': 'METEOFRANCE_APP_ID', 'note': 'M\u00e9t\u00e9o-France\'s radar mosaics from the Paquet Radar API — the application id is the repository secret METEOFRANCE_APP_ID (6 Nov, late; the archive\'s members are logged on the first run)'},
+    {'id': 'fr', 'kind': 'meteofrance', 'name': 'France', 'source': 'M\u00e9t\u00e9o-France', 'licence': 'Licence Ouverte 2.0, Source: M\u00e9t\u00e9o-France', 'product': 'Lame d\'eau 500 m (5-min rainfall, as mm/h)', 'bbox': (-6.0, 41.0, 10.5, 51.5), 'step_min': 5, 'step': 0.02,
+     'secret': 'METEOFRANCE_APP_ID', 'note': 'M\u00e9t\u00e9o-France\'s Paquet Radar API (a tar.gz every quarter hour with three 5-min steps): the metropolitan 500 m lame d\'eau T_IPRN20 (ODIM HDF5, polar stereographic, 3472\u00b2) read since 7 Nov 22:45; the application id is the repository secret METEOFRANCE_APP_ID'},
     {'id': 'no', 'kind': 'nordic', 'name': 'Norway · Sweden · Finland (Nordic composite)', 'source': 'MET Norway', 'licence': 'CC BY 4.0, Source: MET Norway', 'product': 'Nordic radar composite (pcappi 0 dBZ)',
      'bbox': (0.5, 54.0, 38.0, 72.0), 'step_min': 5, 'step': 0.02,
      'note': 'The Nordic composite from MET Norway\'s THREDDS server — the radars of Norway, Sweden and Finland on one 1 km Lambert grid every 5 min (6 Nov, late: data, not the rendered picture of api.met.no)'},
@@ -293,14 +293,17 @@ def run_geosphere(src, a):
         raise RuntimeError('no analysis step read')
 
 
-def odim_rate(rate, quantity):
-    """An ODIM field as mm/h: a RATE/RR field as it is; a reflectivity field (DBZH, TH …) through Marshall-Palmer (Z = 200 R^1.6), below 5 dBZ dry."""
+def odim_rate(rate, quantity, acc_min=5):
+    """An ODIM field as mm/h: a RATE/RR field as it is; an accumulation (ACRR, mm over acc_min minutes — Météo-France's lame d'eau is 5 min,
+    7 Nov 22:45) scaled to the hour; a reflectivity field (DBZH, TH …) through Marshall-Palmer (Z = 200 R^1.6), below 5 dBZ dry."""
     q = str(quantity or '').upper()
     if q.startswith('DBZ') or q in ('TH', 'TV', 'ZH'):
         r = (np.power(10.0, rate / 10.0) / 200.0) ** (1.0 / 1.6)
         r[rate < 5.0] = 0.0
         r[~np.isfinite(rate)] = np.nan
         return r.astype(np.float32)
+    if q == 'ACRR' and acc_min and acc_min > 0:
+        return (rate * (60.0 / float(acc_min))).astype(np.float32)
     return rate
 
 
@@ -796,11 +799,23 @@ def run_meteofrance(src, a):
         raise RuntimeError('%d from the Paquet Radar API: %s — the application has no subscription to «Paquet Radar» (DPPaquetRadar) in the portal: Mes applications → DefaultApplication' % (r.status_code, body))
     r.raise_for_status()
     kind, members = archive_members(r.content)
-    log(src['id'], 'archive', kind, 'members', len(members), [(n, len(b), b[:4]) for n, b in members[:40]])
+    try:                                                                                               # frames written before 7 Nov 22:45 held mm per 5 min as mm/h (12× too low): once, they go
+        fj = d + '/frames.json'
+        if os.path.exists(fj) and 'acc' not in json.load(open(fj)):
+            import shutil; shutil.rmtree(d + '/frames', ignore_errors=True); os.remove(fj); log(src['id'], 'frames of the old scale dropped')
+    except Exception as e:
+        log(src['id'], 'old frames:', e)
+    log(src['id'], 'archive', kind, 'members', len(members), [(n, len(b)) for n, b in members if n.startswith(src.get('member', 'T_IPRN20_'))])
     got = 0
     def magic(b):
         return 'hdf5' if b[:4] == b'\x89HDF' else 'tiff' if b[:4] in (b'II*\x00', b'MM\x00*') else 'bufr' if b[:4] == b'BUFR' else 'grib' if b[:4] == b'GRIB' else 'gzip' if b[:2] == b'\x1f\x8b' else '?'
+    want = src.get('member', 'T_IPRN20_')                                                              # the metropolitan 500 m lame d'eau (ODIM HDF5, ACRR per 5 min); IPRN21/IMFR27 are BUFR, IPRE… the overseas zones
+    others = [n for n, b in members if want and not n.startswith(want)]
+    if others:
+        log(src['id'], 'members left aside:', len(others), sorted(set(re.sub(r'_\d{14}.*$', '', n) for n in others)))
     for name, blob in members:
+        if want and not name.startswith(want):
+            continue
         low = name.lower()
         try:
             if magic(blob) == 'gzip':                                                                  # a member gzipped on its own
@@ -810,7 +825,7 @@ def run_meteofrance(src, a):
             if mg == 'hdf5' or low.endswith(('.h5', '.hdf5', '.hdf')):
                 rate, grid, scale, quantity = convert.read_odim(blob)
                 log('  member', name, len(blob), 'bytes hdf5', quantity, getattr(rate, 'shape', None), {k: grid.get(k) for k in ('xsize', 'ysize', 'xscale', 'yscale') if isinstance(grid, dict) and k in grid})
-                rate = odim_rate(rate, quantity)
+                rate = odim_rate(rate, quantity, src.get('step_min', 5))
                 field, _, size = convert.reproject(rate, grid, src['bbox'], step)
             elif mg == 'tiff' or low.endswith(('.tif', '.tiff')):
                 data, frame = read_geotiff(blob)
@@ -825,7 +840,7 @@ def run_meteofrance(src, a):
             wet = float(np.nanmean(field >= 0.1)) if np.isfinite(field).any() else 0.0
             if convert.coverage_stale(d, stamp):
                 convert.write_coverage(d, np.isfinite(field), src['bbox'], step, src['source'])
-            k, n = write_frames(a.out, src, stamp, img, a.frames, {'wet_share': round(wet, 4), 'width': size[0], 'height': size[1], 'step_deg': step, 'url': MF_PAQUET, 'note': src.get('note', ''), 'member': name})
+            k, n = write_frames(a.out, src, stamp, img, a.frames, {'wet_share': round(wet, 4), 'width': size[0], 'height': size[1], 'step_deg': step, 'url': MF_PAQUET, 'note': src.get('note', ''), 'member': name, 'acc': 'ACRR mm per %d min, shown as mm/h' % int(src.get('step_min', 5))})
             log('  done', k, size, 'wet share', round(wet, 4), 'frames', n, 'from', name); got += 1
         except Exception as e:
             log('  member', name, 'failed:', e)
