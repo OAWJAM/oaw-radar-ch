@@ -620,12 +620,20 @@ def knmi_read(blob):
     formula = str(s(cal.get('calibration_formulas', 'GEO = 0.500000 * PV + -31.500000')))
     m = re.search(r'GEO\s*=\s*([-\d.]+)\s*\*\s*PV\s*\+\s*([-\d.]+)', formula)
     a_, b_ = (float(m.group(1)), float(m.group(2))) if m else (0.5, -31.5)
-    nod = {255}                                                                                          # the uint8 ceiling is «no data» in every KNMI composite (the first keyed run, 7 Nov 22:20: the
-    for k in ('calibration_missing_data', 'calibration_out_of_image'):                                  # missing-data attribute named another value, so the whole square outside the radars painted as a deluge)
-        v = cal.get(k)
-        if v is not None:
-            try: nod.add(int(np.ravel(v)[0]))
-            except (TypeError, ValueError): pass
+    # the codes (the keyed runs of 7 Nov 22:20/22:27): KNMI writes calibration_missing_data = 0 and calibration_out_of_image = 255 — 0 is the dry
+    # pixel inside the radars' reach (no echo), 255 the pixel beyond it; the first reader took 0 as the only no-data code and painted every 255
+    # as 95.5 dBZ, a deluge over the whole square. Beyond reach → NaN (the coverage edge comes from it); 0 → dry.
+    nod = {255}
+    v = cal.get('calibration_out_of_image')
+    if v is not None:
+        try: nod.add(int(np.ravel(v)[0]))
+        except (TypeError, ValueError): pass
+    v = cal.get('calibration_missing_data')
+    if v is not None:
+        try:
+            mv = int(np.ravel(v)[0])
+            if mv != 0: nod.add(mv)
+        except (TypeError, ValueError): pass
     dbz = raw.astype(np.float32) * a_ + b_
     rate = odim_rate(dbz, 'DBZH')
     rate[np.isin(raw, list(nod))] = np.nan
@@ -751,6 +759,9 @@ def run_meteofrance(src, a):
         raise RuntimeError('no token from the portal')
     r = requests.get(MF_PAQUET, headers={'Authorization': 'Bearer ' + tok, 'Accept': 'application/zip, */*', 'User-Agent': UA}, timeout=180)
     log(src['id'], 'paquet', r.status_code, r.headers.get('content-type'), len(r.content), 'bytes')
+    if r.status_code in (401, 403):                                                                      # the token is good, the API is not open to the application (22:27: 403) — the portal's subscription is missing
+        body = re.sub(r'\s+', ' ', r.text[:200])
+        raise RuntimeError('%d from the Paquet Radar API: %s — the application has no subscription to «Paquet Radar» (DPPaquetRadar) in the portal: Mes API → the API → Souscrire → DefaultApplication' % (r.status_code, body))
     r.raise_for_status()
     z = zipfile.ZipFile(io.BytesIO(r.content))
     names = z.namelist()
