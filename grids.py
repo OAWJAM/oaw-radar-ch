@@ -42,8 +42,8 @@ SOURCES = [
     {'id': 'es', 'kind': 'aemet', 'name': 'Spain', 'source': 'AEMET', 'licence': 'AEMET OpenData, Source: AEMET', 'product': 'National radar composite (picture)', 'bbox': (-10.0, 35.0, 5.0, 44.5), 'step_min': 10, 'step': 0.02,
      'secret': 'AEMET_API_KEY', 'probe_only': True,
      'note': 'AEMET\'s national radar composite from OpenData (api/red/radar/nacional) — a picture, georeferenced by hand; the key is the repository secret AEMET_API_KEY (7 Nov 22:39; the first pass keeps the raw picture as es/_probe.png for the calibration)'},
-    {'id': 'is', 'kind': 'imo', 'name': 'Iceland', 'source': 'Icelandic Meteorological Office', 'licence': 'IMO conditions of use (free, with attribution and date), Source: Icelandic Meteorological Office', 'product': 'Radar pictures (probe)', 'bbox': (-26.0, 62.5, -12.0, 67.5), 'step_min': 10, 'step': 0.02, 'probe_only': True,
-     'note': 'the IMO radar pictures (vedur.is) — a first look for the owner\'s example (8 Nov 00:09); no frames yet'},
+    {'id': 'is', 'kind': 'imo', 'name': 'Iceland', 'source': 'Icelandic Meteorological Office', 'licence': 'Free use with attribution (IMO conditions of use), Source: Icelandic Meteorological Office', 'product': 'Radar composite Keflav\u00edk \u00b7 Bj\u00f3lfur \u00b7 Skaga (reflectivity, as mm/h)', 'bbox': (-29.5, 62.8, -9.5, 67.4), 'step_min': 5, 'step': 0.02,
+     'note': 'the IMO radar composite picture (vedur.is, every 5 min) read by its legend and placed by its graticule — a Lambert conformal conic fitted from the picture (8 Nov 00:30); the owner\'s «Ja» of 00:17'},
     {'id': 'it', 'kind': 'dpc', 'name': 'Italy', 'source': 'Radar-DPC', 'licence': 'CC BY-SA, Source: Radar-DPC (Dipartimento della Protezione Civile)', 'product': 'National radar mosaic (SRI, rain intensity; VMI when SRI is missing)',
      'bbox': (6.0, 35.5, 19.0, 47.5), 'step_min': 5, 'step': 0.01,
      'note': 'Radar-DPC, the national mosaic of the Dipartimento della Protezione Civile (radar-api.protezionecivile.it, docs dpc-radar.readthedocs.io): the newest product as a GeoTIFF on a 1 km Transverse Mercator grid, asked with the platform\'s own origin header; the docs name CC BY-SA with «Radar-DPC» as the source (7 Nov, the owner: «Italien go»)'},
@@ -899,42 +899,99 @@ def run_aemet(src, a):
     raise RuntimeError('the AEMET reader is not written yet')
 
 
-def run_imo_probe(src, a):
-    """Iceland, a first look (the owner, 8 Nov 00:09: «Mache ein Beispiel für Island»): the IMO radar page is script-built, so the runner reads the
-    page and its scripts for the picture addresses, keeps the first pictures under is/ as _probe_<n>.png and logs what it found. No frames."""
-    d = a.out + '/' + src['id']; os.makedirs(d, exist_ok=True)
-    found = []
-    for url in ('https://en.vedur.is/weather/observations/radar/', 'https://www.vedur.is/vedur/athuganir/vedurratsja/'):
+IMO_PAGE = 'https://en.vedur.is/weather/observations/radar/'
+IMO_LEGEND = [((75, 75, 128), -5), ((22, 22, 128), 0), ((10, 65, 191), 5), ((15, 180, 240), 10), ((28, 231, 156), 15), ((85, 170, 0), 20), ((169, 212, 0), 25),
+              ((255, 255, 0), 30), ((254, 101, 0), 35), ((212, 51, 0), 40), ((170, 0, 0), 45)]                    # the picture's legend: dBZ classes of 5 (the -10 box is a light grey — no rain)
+IMO_CAL = {'P': (230.4, -1766.0), 'n': 0.9016442926106257, 'F': 7565.154382629653, 'lon0': -20.0187245540686}  # the picture's Lambert conformal conic, fitted from its graticule (8 Nov 00:30): pole pixel P, r = F·tan(π/4−φ/2)^n, θ = n·(λ−λ0)
+
+
+def imo_pictures():
+    """The radar_isl pictures the IMO radar page names (every 5 min, two hours), oldest first: [(stamp, url)]. The page is script-built; the
+    addresses stand in its source as https://en.vedur.is/photos/radar_isl/YYMMDD_HHMM.png (the time is UTC — Iceland keeps UTC all year)."""
+    r = requests.get(IMO_PAGE, headers={'User-Agent': UA}, timeout=60); r.raise_for_status()
+    out = {}
+    for m in re.finditer(r'https?://[a-z.]*vedur\.is/photos/radar_isl/(\d{6})_(\d{4})\.png', r.text):
+        d6, t4 = m.group(1), m.group(2)
         try:
-            r = requests.get(url, headers={'User-Agent': UA}, timeout=60)
-            log(src['id'], 'page', url, r.status_code, len(r.text))
-            for m in re.findall(r'https?://[^"\'\s<>]+\.(?:png|gif|jpg)', r.text):
-                if m not in found: found.append(m)
-            for m in re.findall(r'["\']((?:/[^"\'\s<>]+)?/(?:photos|myndir|radar|ratsja)[^"\'\s<>]*\.(?:png|gif|jpg))["\']', r.text):
-                u = 'https://en.vedur.is' + m if m.startswith('/') else m
-                if u not in found: found.append(u)
-            for js in re.findall(r'<script[^>]+src="([^"]+)"', r.text)[:12]:
-                ju = js if js.startswith('http') else ('https://en.vedur.is' + js if js.startswith('/') else url + js)
-                try:
-                    rj = requests.get(ju, headers={'User-Agent': UA}, timeout=60)
-                    hits = re.findall(r'https?://[^"\'\s<>]+(?:radar|ratsja)[^"\'\s<>]*', rj.text)
-                    if hits: log(src['id'], 'script', ju, 'names', hits[:6])
-                except Exception as e:
-                    log(src['id'], 'script', ju, 'failed:', e)
-        except Exception as e:
-            log(src['id'], 'page failed:', url, e)
-    log(src['id'], 'pictures named by the page:', found[:20])
-    n = 0
-    for u in found[:6]:
+            out[parse_time('20' + d6[:2] + '-' + d6[2:4] + '-' + d6[4:6] + 'T' + t4[:2] + ':' + t4[2:] + 'Z')] = m.group(0)
+        except Exception:
+            pass
+    return [(t, out[t]) for t in sorted(out)]
+
+
+def imo_read(blob):
+    """The IMO composite picture as a rain field: (rate mm/h — NaN beyond the radars' reach, 0 where they see dry air —, pixel frame). Rain by the
+    nearest legend colour (the picture is drawn with smooth shades), dBZ → mm/h by Marshall–Palmer, under 5 dBZ dry; the grey outside the circles
+    (185) is no data; land (222), sea and glaciers (254), the coast (black) and the graticule (grey) are dry."""
+    im = Image.open(io.BytesIO(blob)).convert('RGB'); a = np.array(im).astype(np.int16); H, W = a.shape[:2]
+    if (W, H) != (540, 383):
+        raise RuntimeError('the IMO picture changed its size: %dx%d (the calibration is for 540x383)' % (W, H))
+    r, g, b = a[..., 0], a[..., 1], a[..., 2]
+    sat = (a.max(axis=2) - a.min(axis=2)) > 40
+    area = np.zeros((H, W), bool); area[12:350, 3:537] = True                                        # the map without the title row, the legend and the frame
+    cols = np.array([c for c, v in IMO_LEGEND], dtype=np.int16); vals = np.array([v for c, v in IMO_LEGEND], dtype=np.float32)
+    dbz = np.full((H, W), np.nan, dtype=np.float32)
+    cand = sat & area
+    if cand.any():
+        px = a[cand].astype(np.int32); dist = ((px[:, None, :] - cols[None, :, :].astype(np.int32)) ** 2).sum(axis=2); near = dist.argmin(axis=1); good = dist[np.arange(len(px)), near] < 70 ** 2   # int32: the squares overflow int16
+        yy, xx = np.where(cand); dbz[yy[good], xx[good]] = vals[near[good]] + 2.5
+    rate = (np.power(10.0, dbz / 10.0) / 200.0) ** (1.0 / 1.6)
+    rate[dbz < 5] = 0.0
+    outside = (r == 185) & (g == 185) & (b == 185)                                                   # beyond the radars' reach
+    dry = ~np.isfinite(dbz) & ~outside & area
+    rate[dry] = 0.0
+    rate[outside | ~area] = np.nan
+    return rate.astype(np.float32), {'w': W, 'h': H}
+
+
+def imo_project(lon, lat):
+    """lon/lat → the picture's pixel (x, y) by its fitted Lambert conformal conic."""
+    c = IMO_CAL
+    rr = c['F'] * np.power(np.tan(np.pi / 4 - np.radians(lat) / 2), c['n']); th = np.radians(c['n'] * (lon - c['lon0']))
+    return c['P'][0] + rr * np.sin(th), c['P'][1] + rr * np.cos(th)
+
+
+def imo_field(rate, bbox, step):
+    """The rain field on the lon/lat grid of the source's box: every cell samples the picture pixel under its centre (the pixels are ≈ 1.5 km,
+    the cells 0.02°); a cell outside the picture or beyond the reach is NaN."""
+    W, S, E, N = bbox
+    lons = np.arange(W + step / 2, E, step); lats = np.arange(N - step / 2, S, -step)
+    LO, LA = np.meshgrid(lons, lats); X, Y = imo_project(LO, LA)
+    xi = np.round(X).astype(int); yi = np.round(Y).astype(int); H, Wd = rate.shape
+    ok = (xi >= 0) & (xi < Wd) & (yi >= 0) & (yi < H)
+    field = np.full(LO.shape, np.nan, dtype=np.float32); field[ok] = rate[yi[ok], xi[ok]]
+    return field, (len(lons), len(lats))
+
+
+def run_imo(src, a):
+    """Iceland (the owner's «Ja», 8 Nov 00:17): the IMO composite of the three radars (Keflavík, Bjólfur, Skaga) as the radar page publishes it —
+    a picture every 5 minutes, read by its legend and placed by its graticule (imo_read, imo_field); the coverage edge from the picture's grey
+    beyond the reach. IMO's conditions of use allow it with the attribution and the date (the frames carry both)."""
+    d = a.out + '/' + src['id']; step = src.get('step', a.step); os.makedirs(d, exist_ok=True)
+    pics = imo_pictures()
+    if not pics:
+        raise RuntimeError('the IMO radar page named no picture')
+    todo = [(t, u) for t, u in pics if not os.path.exists(d + '/frames/' + t.strftime('%Y%m%d%H%M') + '.png')][-max(1, a.backfill):]
+    if not todo:
+        log(src['id'], 'already there', pics[-1][0].strftime('%Y%m%d%H%M')); return 0
+    got = 0
+    for stamp, url in todo:
         try:
-            r = requests.get(u, headers={'User-Agent': UA, 'Referer': 'https://en.vedur.is/'}, timeout=60)
-            if r.status_code != 200 or len(r.content) < 2000: log(src['id'], 'picture', u, r.status_code, len(r.content)); continue
-            im = Image.open(io.BytesIO(r.content)); log(src['id'], 'picture', u, im.format, im.mode, im.size)
-            im.convert('RGBA').save(d + '/_probe_%d.png' % n); n += 1
+            r = requests.get(url, headers={'User-Agent': UA, 'Referer': IMO_PAGE}, timeout=60); r.raise_for_status()
+            rate, frame = imo_read(r.content)
+            field, size = imo_field(rate, src['bbox'], step)
+            field[np.isfinite(field) & (field < 0.1)] = 0.0
+            img = convert.paint(field)
+            wet = float(np.nanmean(field >= 0.1)) if np.isfinite(field).any() else 0.0
+            if convert.coverage_stale(d, stamp):
+                convert.write_coverage(d, np.isfinite(field), src['bbox'], step, src['source'])
+            k, n = write_frames(a.out, src, stamp, img, a.frames, {'wet_share': round(wet, 4), 'width': size[0], 'height': size[1], 'step_deg': step, 'url': url, 'note': src.get('note', ''), 'attribution_date': stamp.strftime('%Y-%m-%d')})
+            log('  done', k, size, 'wet share', round(wet, 4), 'frames', n, 'nodata share', round(float(np.mean(~np.isfinite(field))), 3)); got += 1
         except Exception as e:
-            log(src['id'], 'picture failed:', u, e)
-    json.dump({'ok': False, 'probe': True, 'found': found[:20], 'kept': n, 'at': dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}, open(d + '/status.json', 'w'), indent=1)
-    return 0
+            log('  ', stamp.strftime('%H:%MZ'), 'failed:', e)
+    if not got:
+        raise RuntimeError('no picture converted')
+    return got
 
 
 def nordic_files(n=12):
@@ -1234,7 +1291,7 @@ def main():
         d = a.out + '/' + src['id']; os.makedirs(d, exist_ok=True)
         if src.get('kind') in ('geosphere', 'nordic', 'dmi', 'knmi', 'meteofrance', 'chmi', 'dpc', 'aemet', 'imo'):
             try:
-                {'geosphere': run_geosphere, 'nordic': run_nordic, 'dmi': run_dmi, 'knmi': run_knmi, 'meteofrance': run_meteofrance, 'chmi': run_chmi, 'dpc': run_dpc, 'aemet': run_aemet, 'imo': run_imo_probe}[src['kind']](src, a)
+                {'geosphere': run_geosphere, 'nordic': run_nordic, 'dmi': run_dmi, 'knmi': run_knmi, 'meteofrance': run_meteofrance, 'chmi': run_chmi, 'dpc': run_dpc, 'aemet': run_aemet, 'imo': run_imo}[src['kind']](src, a)
             except Exception as e:
                 log(src['id'], 'failed:', e)
                 json.dump({'ok': False, 'error': str(e)[:300], 'at': dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}, open(d + '/status.json', 'w'), indent=1)
