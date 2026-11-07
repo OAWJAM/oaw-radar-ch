@@ -819,6 +819,7 @@ def run_meteofrance(src, a):
     others = [n for n, b in members if want and not n.startswith(want)]
     if others:
         log(src['id'], 'members left aside:', len(others), sorted(set(re.sub(r'_\d{14}.*$', '', n) for n in others)))
+    seen = 0
     for name, blob in members:
         if want and not name.startswith(want):
             continue
@@ -840,7 +841,7 @@ def run_meteofrance(src, a):
             else:
                 log('  member', name, len(blob), 'bytes', mg, repr(blob[:24]), '— not read yet (format unknown to the reader)'); continue
             if os.path.exists(d + '/frames/' + stamp.strftime('%Y%m%d%H%M') + '.png'):
-                continue
+                seen += 1; continue
             field[np.isfinite(field) & (field < 0.1)] = 0.0
             img = convert.paint(field)
             wet = float(np.nanmean(field >= 0.1)) if np.isfinite(field).any() else 0.0
@@ -850,6 +851,8 @@ def run_meteofrance(src, a):
             log('  done', k, size, 'wet share', round(wet, 4), 'frames', n, 'from', name); got += 1
         except Exception as e:
             log('  member', name, 'failed:', e)
+    if not got and seen:
+        log(src['id'], 'already there —', seen, 'members converted before'); return 0                 # the quarter hour's three steps were read by an earlier pass (8 Nov 00:30): no failure
     if not got:
         raise RuntimeError('no mosaic read from the archive — the members are in the log')
     return got
@@ -910,12 +913,13 @@ def imo_pictures():
     addresses stand in its source as https://en.vedur.is/photos/radar_isl/YYMMDD_HHMM.png (the time is UTC — Iceland keeps UTC all year)."""
     r = requests.get(IMO_PAGE, headers={'User-Agent': UA}, timeout=60); r.raise_for_status()
     out = {}
-    for m in re.finditer(r'https?://[a-z.]*vedur\.is/photos/radar_isl/(\d{6})_(\d{4})\.png', r.text):
-        d6, t4 = m.group(1), m.group(2)
+    hits = re.findall(r'radar_isl[/\\]+(\d{6})_(\d{4})\.png', r.text)
+    log('is page', r.status_code, len(r.text), 'chars,', len(hits), 'radar_isl names', hits[:2], hits[-1:])
+    for d6, t4 in hits:
         try:
-            out[parse_time('20' + d6[:2] + '-' + d6[2:4] + '-' + d6[4:6] + 'T' + t4[:2] + ':' + t4[2:] + 'Z')] = m.group(0)
-        except Exception:
-            pass
+            out[parse_time('20' + d6[:2] + '-' + d6[2:4] + '-' + d6[4:6] + 'T' + t4[:2] + ':' + t4[2:] + 'Z')] = 'https://en.vedur.is/photos/radar_isl/%s_%s.png' % (d6, t4)
+        except Exception as e:
+            log('is time', d6, t4, 'failed:', e)
     return [(t, out[t]) for t in sorted(out)]
 
 
