@@ -620,10 +620,19 @@ def knmi_read(blob):
     formula = str(s(cal.get('calibration_formulas', 'GEO = 0.500000 * PV + -31.500000')))
     m = re.search(r'GEO\s*=\s*([-\d.]+)\s*\*\s*PV\s*\+\s*([-\d.]+)', formula)
     a_, b_ = (float(m.group(1)), float(m.group(2))) if m else (0.5, -31.5)
-    miss = cal.get('calibration_missing_data'); miss = int(np.ravel(miss)[0]) if miss is not None else 255
+    nod = {255}                                                                                          # the uint8 ceiling is «no data» in every KNMI composite (the first keyed run, 7 Nov 22:20: the
+    for k in ('calibration_missing_data', 'calibration_out_of_image'):                                  # missing-data attribute named another value, so the whole square outside the radars painted as a deluge)
+        v = cal.get(k)
+        if v is not None:
+            try: nod.add(int(np.ravel(v)[0]))
+            except (TypeError, ValueError): pass
     dbz = raw.astype(np.float32) * a_ + b_
     rate = odim_rate(dbz, 'DBZH')
-    rate[raw == miss] = np.nan
+    rate[np.isin(raw, list(nod))] = np.nan
+    rate[dbz > 90.0] = np.nan                                                                              # no radar sees 90 dBZ — a code, not rain
+    vals, counts = np.unique(raw, return_counts=True)
+    top = sorted(zip(counts.tolist(), vals.tolist()), reverse=True)[:5]
+    info_vals = {'nodata_codes': sorted(nod), 'top_values': [(int(v), int(c)) for c, v in top], 'wet_px': int(np.sum(np.isfinite(rate) & (rate >= 0.1))), 'nan_px': int(np.sum(~np.isfinite(rate)))}
     proj4 = str(s(mp.get('projection_proj4_params', '+proj=stere +lat_0=90 +lon_0=0 +lat_ts=60 +a=6378.14 +b=6356.75 +x_0=0 y_0=0'))).replace('+a=6378.14 ', '+a=6378140 ').replace('+b=6356.75 ', '+b=6356750 ')
     corners = np.ravel(geo.get('geo_product_corners', [])).astype(float)
     px = float(np.ravel(geo.get('geo_pixel_size_x', [1.0]))[0]); py = float(np.ravel(geo.get('geo_pixel_size_y', [-1.0]))[0])
@@ -635,7 +644,7 @@ def knmi_read(blob):
     else:
         x0 = float(np.ravel(geo.get('geo_column_offset', [0]))[0]) * px * unit; y0 = -float(np.ravel(geo.get('geo_row_offset', [0]))[0]) * abs(py) * unit
     frame = {'x0': x0, 'y0': y0, 'xs': abs(px) * unit, 'ys': abs(py) * unit, 'crs': proj4}
-    return rate, frame, {'formula': formula, 'shape': raw.shape, 'proj4': proj4, 'corners': corners[:8].tolist()}
+    return rate, frame, {'formula': formula, 'shape': raw.shape, 'proj4': proj4, 'corners': corners[:8].tolist(), 'cal': {k: (np.ravel(v).tolist()[:2] if isinstance(v, np.ndarray) else str(v)[:40]) for k, v in cal.items()}, **info_vals}
 
 
 def knmi_files(key, n=12):
