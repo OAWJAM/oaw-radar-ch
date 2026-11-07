@@ -39,9 +39,9 @@ SOURCES = [
     {'id': 'no', 'kind': 'nordic', 'name': 'Norway · Sweden · Finland (Nordic composite)', 'source': 'MET Norway', 'licence': 'CC BY 4.0, Source: MET Norway', 'product': 'Nordic radar composite (pcappi 0 dBZ)',
      'bbox': (0.5, 54.0, 38.0, 72.0), 'step_min': 5, 'step': 0.02,
      'note': 'The Nordic composite from MET Norway\'s THREDDS server — the radars of Norway, Sweden and Finland on one 1 km Lambert grid every 5 min (6 Nov, late: data, not the rendered picture of api.met.no)'},
-    {'id': 'it', 'kind': 'dpc', 'name': 'Italy', 'source': 'Dipartimento della Protezione Civile', 'licence': 'Source: Dipartimento della Protezione Civile — Piattaforma Radar (the terms as its site states them; the probe logs the licence lines)', 'product': 'National radar mosaic (SRI, rain intensity; VMI when SRI is missing)',
+    {'id': 'it', 'kind': 'dpc', 'name': 'Italy', 'source': 'Radar-DPC', 'licence': 'CC BY-SA, Source: Radar-DPC (Dipartimento della Protezione Civile)', 'product': 'National radar mosaic (SRI, rain intensity; VMI when SRI is missing)',
      'bbox': (6.0, 35.5, 19.0, 47.5), 'step_min': 5, 'step': 0.01,
-     'note': 'The national mosaic of the Dipartimento della Protezione Civile\'s radar platform (radar-api.protezionecivile.it): the newest product as a GeoTIFF, asked with the platform\'s own Origin header (7 Nov, the owner: «Italien go»)', 'await_probe': 'the reader was written from memory of the platform; the probe run (grids.py --probe --only it) must confirm the GeoTIFF frame and the values before the pictures go on the site'},
+     'note': 'Radar-DPC, the national mosaic of the Dipartimento della Protezione Civile (radar-api.protezionecivile.it, docs dpc-radar.readthedocs.io): the newest product as a GeoTIFF on a 1 km Transverse Mercator grid, asked with the platform\'s own origin header; the docs name CC BY-SA with «Radar-DPC» as the source (7 Nov, the owner: «Italien go»)', 'await_probe': 'the reader was written from memory of the platform; the probe run (grids.py --probe --only it) must confirm the GeoTIFF frame and the values before the pictures go on the site'},
     {'id': 'cz', 'kind': 'chmi', 'name': 'Czechia', 'source': '\u010cHM\u00da', 'licence': 'CC BY 4.0 (the \u010cHM\u00da open-data page carries the CC BY 4.0 mark; the data server itself names none), Source: \u010cHM\u00da', 'product': 'MAX_Z composite',
      'bbox': (11.2, 48.0, 19.7, 51.5), 'step_min': 5, 'step': 0.01,
      'note': '\u010cHM\u00da\'s radar composite (maximum reflectivity, 1 km Mercator, every 5 min) from the open-data portal opendata.chmi.cz — ODIM HDF5, no key (7 Nov, the owner: «CZ ja»)'},
@@ -53,9 +53,10 @@ MF_PAQUET = 'https://public-api.meteofrance.fr/public/DPPaquetRadar/v1/mosaique/
 THREDDS = 'https://thredds.met.no/thredds'
 CHMI = 'https://opendata.chmi.cz/meteorology/weather/radar/composite/maxz/hdf5/'
 CHMI_ROOT = 'https://opendata.chmi.cz/'
-DPC_API = 'https://radar-api.protezionecivile.it/wide/product'
-DPC_ORIGIN = 'https://mappe.protezionecivile.gov.it'                 # the platform's own page: the API answers its Origin (7 Nov, the «origin-header trick» the owner said go to)
-DPC_TERMS = 'https://mappe.protezionecivile.gov.it/it/mappe-rischi/piattaforma-radar/'
+DPC_API = 'https://radar-api.protezionecivile.it'                   # Radar-DPC (dpc-radar.readthedocs.io): findLastProductByType, downloadProduct (a pre-signed S3 link), the origin header on every call
+DPC_ORIGIN = 'https://radar.protezionecivile.it'                   # the platform's own page: «è necessario includere il parametro origin in tutte le richieste» (7 Nov, the owner: «Italien go»)
+DPC_TERMS = 'https://dpc-radar.readthedocs.io/it/latest/'
+DPC_TM = '+proj=tmerc +lat_0=42 +lon_0=12.5 +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs'   # the custom Transverse Mercator of VMI/SRI as the docs' gdalinfo shows it (1200 × 1400 at 1 km from -600000/650000)
 NORDIC_CAT = THREDDS + '/catalog/remotesensing/reflectivity-nordic/latest/catalog.html'
 
 
@@ -409,11 +410,14 @@ def dpc_headers(extra=None):
 
 
 def dpc_last(product):
-    """The newest product's time (UTC) as the platform names it: findLastProductByType → {time (ms), productType}."""
+    """The newest product's time (UTC) as the platform names it: findLastProductByType → {total, lastProducts:[{productType, time (ms), period}]}."""
     r = requests.get(DPC_API + '/findLastProductByType', params={'type': product}, headers=dpc_headers(), timeout=60)
+    if r.status_code == 404:
+        raise RuntimeError(product + ': no product on the platform (404)')
     r.raise_for_status()
     j = r.json()
-    t = j.get('time') if isinstance(j, dict) else None
+    lst = j.get('lastProducts') if isinstance(j, dict) else None
+    t = (lst[0].get('time') if lst else None) if isinstance(lst, list) else (j.get('time') if isinstance(j, dict) else None)
     if t is None:
         raise RuntimeError('findLastProductByType answered without a time: ' + str(j)[:200])
     t = int(t)
@@ -421,10 +425,29 @@ def dpc_last(product):
 
 
 def dpc_download(product, t_raw):
-    """One product as the platform serves it (a GeoTIFF): downloadProduct with the product and its time."""
+    """One product as the platform serves it: downloadProduct answers a pre-signed S3 link ({bucket, key, url, expiresSeconds}); the file is a GeoTIFF."""
     r = requests.post(DPC_API + '/downloadProduct', json={'productType': product, 'productDate': t_raw}, headers=dpc_headers({'Content-Type': 'application/json'}), timeout=120)
     r.raise_for_status()
-    return r.content, r.headers.get('content-type', ''), r.headers.get('content-disposition', '')
+    ctype = r.headers.get('content-type', '')
+    if 'json' in ctype:
+        j = r.json(); url = j.get('url') if isinstance(j, dict) else None
+        if not url:
+            raise RuntimeError('downloadProduct answered without a link: ' + str(j)[:200])
+        r2 = requests.get(url, headers={'User-Agent': UA}, timeout=180)
+        r2.raise_for_status()
+        return r2.content, r2.headers.get('content-type', ''), str(j.get('key', ''))[:120]
+    return r.content, ctype, r.headers.get('content-disposition', '')
+
+
+def dpc_frame(frame):
+    """The GeoTIFF's frame with the platform's custom Transverse Mercator where the file names no EPSG of its own (the SMHI fallback in read_geotiff
+    would say SWEREF99 TM): the docs' gdalinfo shows lat_0 42, lon_0 12.5, false easting/northing 0, 1 km pixels from (-600000, 650000)."""
+    f = dict(frame)
+    if f.get('epsg') == 4326:                                                   # the CUM products come in plain lon/lat
+        f.pop('crs', None)
+    else:                                                                       # VMI, SRI and the rest: the custom TM (the file's keys say user-defined; read_geotiff's fallback would be SMHI's 3006)
+        f['crs'] = DPC_TM
+    return f
 
 
 def dpc_rate(data, frame, product):
@@ -465,6 +488,7 @@ def run_dpc(src, a):
             blob, ctype, disp = dpc_download(product, t_raw)
             log(src['id'], product, stamp.strftime('%Y-%m-%dT%H:%MZ'), len(blob), 'bytes', ctype, disp[:80])
             data, frame = read_geotiff(blob)
+            frame = dpc_frame(frame)
             rate = dpc_rate(data, frame, product)
             field, size = reproject_grid(rate, frame, src['bbox'], step)
             field[np.isfinite(field) & (field < 0.1)] = 0.0
@@ -472,7 +496,7 @@ def run_dpc(src, a):
             wet = float(np.nanmean(field >= 0.1)) if np.isfinite(field).any() else 0.0
             if convert.coverage_stale(d, stamp):
                 convert.write_coverage(d, np.isfinite(field), src['bbox'], step, src['source'])
-            k, n = write_frames(a.out, src, stamp, img, a.frames, {'wet_share': round(wet, 4), 'width': size[0], 'height': size[1], 'step_deg': step, 'url': DPC_API, 'note': src.get('note', ''), 'quantity': product, 'epsg': frame.get('epsg')})
+            k, n = write_frames(a.out, src, stamp, img, a.frames, {'wet_share': round(wet, 4), 'width': size[0], 'height': size[1], 'step_deg': step, 'url': DPC_API, 'note': src.get('note', ''), 'quantity': product, 'crs': frame.get('crs') or ('EPSG:%s' % frame.get('epsg'))})
             log('  done', k, size, 'wet share', round(wet, 4), 'frames', n, 'product', product, 'epsg', frame.get('epsg')); return 1
         except Exception as e:
             last_err = e; log(src['id'], product, 'failed:', e)
@@ -480,17 +504,8 @@ def run_dpc(src, a):
 
 
 def probe_dpc():
-    """What the Protezione Civile platform answers: the licence lines of its page, the newest SRI and VMI times, one download's headers, the GeoTIFF's
-    frame (projection, pixel size, nodata) and the value histogram — with and without the Origin header, so the «trick» is on record."""
-    try:
-        r = requests.get(DPC_TERMS, headers={'User-Agent': UA}, timeout=60)
-        txt = re.sub(r'<[^>]+>', ' ', r.text); txt = re.sub(r'\s+', ' ', txt)
-        hits = [m.start() for m in re.finditer(r'(?i)licen|creative commons|CC[ -]BY|riutilizz|open data|dati aperti', txt)]
-        log('terms page', r.status_code, len(txt), 'chars;', len(hits), 'licence words')
-        for i in hits[:8]:
-            log('  …', txt[max(0, i - 120):i + 160])
-    except Exception as e:
-        log('terms page failed:', e)
+    """What Radar-DPC answers: the newest SRI/VMI/SRT1 times (the documented shape), one VMI download without and with the origin header (the docs
+    say it is required), the GeoTIFF's frame (the custom Transverse Mercator the docs show), the value histogram; the SRI the same."""
     for product in ('SRI', 'VMI', 'SRT1'):
         try:
             stamp, t_raw = dpc_last(product)
@@ -502,21 +517,30 @@ def probe_dpc():
             h = dpc_headers({'Content-Type': 'application/json'})
             if not with_origin:
                 h.pop('Origin'); h.pop('Referer')
-            stamp, t_raw = dpc_last('VMI')
+            r0 = requests.get(DPC_API + '/findLastProductByType', params={'type': 'VMI'}, headers=h, timeout=60)
+            log('findLastProductByType VMI', 'with' if with_origin else 'without', 'origin →', r0.status_code, r0.text[:160])
+            if r0.status_code != 200:
+                continue
+            t_raw = int(r0.json()['lastProducts'][0]['time'])
             r = requests.post(DPC_API + '/downloadProduct', json={'productType': 'VMI', 'productDate': t_raw}, headers=h, timeout=120)
-            log('download VMI', 'with' if with_origin else 'without', 'Origin →', r.status_code, r.headers.get('content-type'), len(r.content), 'bytes', (r.headers.get('content-disposition') or '')[:80])
-            if r.status_code == 200 and len(r.content) > 1000:
-                data, frame = read_geotiff(r.content)
+            log('downloadProduct VMI', 'with' if with_origin else 'without', 'origin →', r.status_code, r.headers.get('content-type'), r.text[:200] if 'json' in (r.headers.get('content-type') or '') else len(r.content))
+            if r.status_code == 200:
+                blob, ctype, key = dpc_download('VMI', t_raw)
+                log('  file', key, len(blob), 'bytes', ctype)
+                data, frame = read_geotiff(blob)
+                log('  geotiff:', data.shape, data.dtype, 'frame', {k: frame[k] for k in ('x0', 'y0', 'xs', 'ys', 'epsg', 'nodata')}, 'ascii', (frame.get('ascii') or '')[:100], 'keys', frame.get('keys'))
                 v = data.astype(np.float32); fin = v[np.isfinite(v)]
-                log('  geotiff:', data.shape, data.dtype, 'frame', {k: frame[k] for k in ('x0', 'y0', 'xs', 'ys', 'epsg', 'nodata')}, 'ascii', frame.get('ascii')[:80])
-                log('  values: min %.1f max %.1f; share <= -999: %.3f; share > 5: %.3f' % (float(fin.min()), float(fin.max()), float(np.mean(v <= -999)), float(np.mean(v > 5))))
-                qs = np.percentile(fin[fin > -999], [1, 10, 50, 90, 99]) if np.any(fin > -999) else []
-                log('  percentiles (1/10/50/90/99) of the valid values:', [round(float(q), 2) for q in qs])
+                log('  values: min %.1f max %.1f; share <= -999: %.3f; share > 5: %.3f; share nan: %.3f' % (float(fin.min()), float(fin.max()), float(np.mean(v <= -999)), float(np.mean(v > 5)), float(np.mean(~np.isfinite(v)))))
+                good = fin[fin > -999]
+                log('  percentiles (1/10/50/90/99) of the values above -999:', [round(float(q), 2) for q in np.percentile(good, [1, 10, 50, 90, 99])] if good.size else [])
+                f2 = dpc_frame(frame); rate = dpc_rate(data, f2, 'VMI')
+                field, size = reproject_grid(rate, f2, (6.0, 35.5, 19.0, 47.5), 0.02)
+                log('  on the lon/lat grid (0.02°):', size, 'share with data %.3f, share wet %.3f' % (float(np.mean(np.isfinite(field))), float(np.nanmean(field >= 0.1)) if np.isfinite(field).any() else 0.0), 'crs', f2.get('crs', f2.get('epsg')))
         except Exception as e:
-            log('download VMI', 'with' if with_origin else 'without', 'Origin failed:', e)
+            log('VMI', 'with' if with_origin else 'without', 'origin failed:', e)
     try:
         stamp, t_raw = dpc_last('SRI')
-        blob, ctype, disp = dpc_download('SRI', t_raw)
+        blob, ctype, key = dpc_download('SRI', t_raw)
         data, frame = read_geotiff(blob)
         v = data.astype(np.float32); fin = v[np.isfinite(v) & (v > -999)]
         log('SRI geotiff:', data.shape, data.dtype, {k: frame[k] for k in ('x0', 'y0', 'xs', 'ys', 'epsg', 'nodata')}, 'valid values min %.2f max %.2f, share >= 0.1 mm/h %.3f' % (float(fin.min()), float(fin.max()), float(np.mean(v >= 0.1))))
