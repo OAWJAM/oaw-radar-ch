@@ -54,6 +54,12 @@ radar description PDFs name none — `grids.py --probe --only cz` prints what th
 histogram of the newest file and how much of the portal's own PNG of that minute is painted (a dry picture is a dry picture: on 7 Nov 09:50Z the
 field had 0.7 % of its cells above undetect, all under 5 dBZ, and the PNG 2.4 % painted).
 
+## Italy — Radar-DPC, the Protezione Civile's national mosaic (7 Nov, the owner: «Italien go»)
+
+`grids.py` source `it` (kind `dpc`): the platform `radar-api.protezionecivile.it` as its documentation (dpc-radar.readthedocs.io) describes it — `GET /findLastProductByType?type=SRI` names the newest product (`{total, lastProducts:[{productType, time, period}]}`, the time in epoch milliseconds, products every 5 minutes), `POST /downloadProduct` with `{productType, productDate}` answers a pre-signed S3 link to the GeoTIFF, and every call carries the platform's own `origin` header (`https://radar.protezionecivile.it` — the docs say it is required; the probe saw the API answer without it too). The product is **SRI**, the surface rain intensity in mm/h (0.0 where a radar sees dry ground, -9999 beyond the reach — the reach's edge comes from that); **VMI** (maximum reflectivity in dBZ, Marshall-Palmer) stands in when SRI is missing, without a reach (VMI masks everything under 10 dBZ as -9999). The grid: 1200 × 1400 cells of 1 km from (-600000, 650000) in a custom Transverse Mercator (lat_0 42, lon_0 12.5, WGS 84) — the file's GeoKeys name only the datum, so the reader sets the projection itself; onto 0.01° lon/lat over 6–19 E · 35.5–47.5 N. **Licence**: the documentation names «Creative Commons Attribuzione – Condividi allo stesso modo» (CC BY-SA) with «Radar-DPC» to be cited as the source; the pictures of this site carry that line.
+
+The source waits behind `await_probe` until a probe run (`grids.py --probe --only it`: the newest products, the download with and without the origin header, the GeoTIFF's frame and values, SRI's reach drawn as a coarse text picture) has confirmed the reader; then the gate goes and the radar workflow publishes `it` with the rest.
+
 ## Retired sources (7 Nov)
 
 The Nordic composite carries the Swedish and Finnish radars, so the single sources `se` (SMHI) and `fi` (FMI) are retired — marked `retired` in their tables, skipped by the runs, their folders removed from the site (`RETIRED` in wms.py). Their code stays; `--only se` or `--only fi` runs one on purpose.
