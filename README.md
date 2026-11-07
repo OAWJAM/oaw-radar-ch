@@ -43,6 +43,15 @@ Beside every `frames.json` that can say where its radars see, a `coverage.json` 
 KNMI (Netherlands) and Météo-France (France) hand their composites out only with a free key. The keys are **repository secrets** — Settings → Secrets and variables → Actions — named `KNMI_API_KEY` (the Data Platform key) and `METEOFRANCE_APP_ID` (the portal's application id, the Basic value from «Générer Token»); `AEMET_API_KEY` is reserved for Spain. `grids.py` reads them from the environment and skips a source whose secret is missing, so the run stays green without them. Denmark needs none since DMI opened its API; the Nordic composite needs none either.
 
 
+## Czechia — ČHMÚ's open data (7 Nov, the owner: «CZ ja»)
+
+The Czech Hydrometeorological Institute publishes its radar products on an **open-data portal** (`opendata.chmi.cz/meteorology/weather/radar/`): the
+composites over the Czech Republic every five minutes as ODIM HDF5 (v2.4) and PNG — MAX_Z, PseudoCAPPI 2 km, a merged 1-h precipitation, echo tops and
+two extrapolation forecasts — on a 1 km Mercator grid (EPSG:3857, about 11.3–19.6 E, 48.0–51.5 N). The source `cz` reads the **MAX_Z composite**
+(`composite/maxz/hdf5/T_PABV23_C_OKPR_<YYYYMMDDhhmmss>.hdf`, listed on the folder's index page), reflectivity through Marshall–Palmer like DMI's, onto
+0.01° latitude/longitude; no key. The licence line says CC BY 4.0 with the attribution ČHMÚ — `grids.py --probe --only cz` prints the portal's own
+licence lines so it can be confirmed from the run log (the radar description PDFs name none).
+
 ## Retired sources (7 Nov)
 
 The Nordic composite carries the Swedish and Finnish radars, so the single sources `se` (SMHI) and `fi` (FMI) are retired — marked `retired` in their tables, skipped by the runs, their folders removed from the site (`RETIRED` in wms.py). Their code stays; `--only se` or `--only fi` runs one on purpose.

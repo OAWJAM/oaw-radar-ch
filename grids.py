@@ -5,7 +5,7 @@ reprojected onto plain latitude/longitude and painted with the same scale as the
 
   python3 grids.py [--out site] [--frames 12] [--only se,at] [--backfill 12] [--probe]
 
-Sources (keyless, open data):
+Sources (keyless, open data; since 7 Nov also ČHMÚ's open-data portal — the Czech MAX_Z composite as ODIM HDF5, Mercator 1 km, every 5 min):
   SMHI       https://opendata-download-radar.smhi.se/api   version/latest/area/sweden/product/comp — a PNG and a GeoTIFF every five minutes;
              pixel value v (1…254) → dBZ = 0.4·v − 30 (0 = no echo, 255 = no data); rain rate by Marshall–Palmer Z = 200·R^1.6.
   GeoSphere  https://dataset.api.hub.geosphere.at/v1/grid/forecast/nowcast-v1-15min-1km — the INCA nowcast, a run every 15 minutes; its
@@ -39,12 +39,17 @@ SOURCES = [
     {'id': 'no', 'kind': 'nordic', 'name': 'Norway · Sweden · Finland (Nordic composite)', 'source': 'MET Norway', 'licence': 'CC BY 4.0, Source: MET Norway', 'product': 'Nordic radar composite (pcappi 0 dBZ)',
      'bbox': (0.5, 54.0, 38.0, 72.0), 'step_min': 5, 'step': 0.02,
      'note': 'The Nordic composite from MET Norway\'s THREDDS server — the radars of Norway, Sweden and Finland on one 1 km Lambert grid every 5 min (6 Nov, late: data, not the rendered picture of api.met.no)'},
+    {'id': 'cz', 'kind': 'chmi', 'name': 'Czechia', 'source': '\u010cHM\u00da', 'licence': 'CC BY 4.0 (as the open-data portal states it; confirmed by the probe), Source: \u010cHM\u00da', 'product': 'MAX_Z composite',
+     'bbox': (11.2, 48.0, 19.7, 51.5), 'step_min': 5, 'step': 0.01,
+     'note': '\u010cHM\u00da\'s radar composite (maximum reflectivity, 1 km Mercator, every 5 min) from the open-data portal opendata.chmi.cz — ODIM HDF5, no key (7 Nov, the owner: «CZ ja»)'},
 ]
 DMI = 'https://opendataapi.dmi.dk/v1/radardata'
 KNMI = 'https://api.dataplatform.knmi.nl/open-data/v1/datasets/radar_reflectivity_composites/versions/2.0/files'
 MF_TOKEN = 'https://portail-api.meteofrance.fr/token'
 MF_PAQUET = 'https://public-api.meteofrance.fr/public/DPPaquetRadar/v1/mosaique/paquet'
 THREDDS = 'https://thredds.met.no/thredds'
+CHMI = 'https://opendata.chmi.cz/meteorology/weather/radar/composite/maxz/hdf5/'
+CHMI_ROOT = 'https://opendata.chmi.cz/'
 NORDIC_CAT = THREDDS + '/catalog/remotesensing/reflectivity-nordic/latest/catalog.html'
 
 
@@ -53,7 +58,8 @@ def log(*a):
 
 
 def get(url, **kw):
-    r = requests.get(url, headers={'User-Agent': UA, 'Accept': 'application/json, */*'}, timeout=90, **kw)
+    headers = {'User-Agent': UA, 'Accept': 'application/json, */*'}; headers.update(kw.pop('headers', {}) or {})
+    r = requests.get(url, headers=headers, timeout=90, **kw)
     r.raise_for_status()
     return r
 
@@ -341,6 +347,82 @@ def run_dmi(src, a):
     if not got:
         raise RuntimeError('no picture converted')
     return got
+
+
+def chmi_files(n=12):
+    """The newest n MAX_Z composites of ČHMÚ's open-data portal, oldest first: [(stamp, url)] — the folder's index page names the files
+    T_PABV23_C_OKPR_YYYYMMDDhhmmss.hdf (the timestamp UTC); a JSON listing is read too should the portal offer one."""
+    r = get(CHMI, headers={'User-Agent': UA, 'Accept': 'text/html, application/json, */*'})
+    body = r.text
+    found = {}
+    for m in re.finditer(r'(T_PABV23_C_OKPR_(\d{14})\.hdf)', body):
+        try:
+            t = dt.datetime.strptime(m.group(2), '%Y%m%d%H%M%S').replace(tzinfo=dt.timezone.utc)
+        except ValueError:
+            continue
+        found[t] = CHMI + m.group(1)
+    stamps = sorted(found)
+    return [(t, found[t]) for t in stamps[-n:]]
+
+
+def run_chmi(src, a):
+    """The Czech source: the newest composites not yet a frame, oldest first — ODIM HDF5 read as DMI's, the reflectivity through Marshall-Palmer."""
+    d = a.out + '/' + src['id']
+    step = src.get('step', a.step)
+    items = chmi_files(max(1, a.backfill))
+    if not items:
+        raise RuntimeError('no composite file named on the portal\'s index page')
+    todo = [(t, h) for t, h in items if not os.path.exists(d + '/frames/' + t.strftime('%Y%m%d%H%M') + '.png')]
+    if not todo:
+        log(src['id'], 'already there', items[-1][0].strftime('%Y%m%d%H%M')); return 0
+    got = 0
+    for stamp, href in todo:
+        try:
+            blob = get(href).content
+            rate, grid, scale, quantity = convert.read_odim(blob)
+            rate = odim_rate(rate, quantity)
+            field, _, size = convert.reproject(rate, grid, src['bbox'], step)
+            field[np.isfinite(field) & (field < 0.1)] = 0.0
+            img = convert.paint(field)
+            wet = float(np.nanmean(field >= 0.1)) if np.isfinite(field).any() else 0.0
+            if convert.coverage_stale(d, stamp):
+                convert.write_coverage(d, np.isfinite(field), src['bbox'], step, src['source'])
+            k, n = write_frames(a.out, src, stamp, img, a.frames, {'wet_share': round(wet, 4), 'width': size[0], 'height': size[1], 'step_deg': step, 'url': href, 'note': src.get('note', ''), 'quantity': quantity})
+            log('  done', k, size, 'wet share', round(wet, 4), 'frames', n, 'quantity', quantity); got += 1
+        except Exception as e:
+            log('  ', stamp.strftime('%H:%MZ'), 'failed:', e)
+    if not got:
+        raise RuntimeError('no picture converted')
+    return got
+
+
+def probe_chmi():
+    """What ČHMÚ's portal offers: the licence lines of its front page, the newest MAX_Z files, one file's HDF5 layout and its where/what attributes."""
+    try:
+        html = get(CHMI_ROOT, headers={'User-Agent': UA, 'Accept': 'text/html, */*'}).text
+        text = re.sub(r'<[^>]+>', ' ', html); text = re.sub(r'\s+', ' ', text)
+        hits = [m.group(0) for m in re.finditer(r'.{0,120}(?:licen|Licen|LICEN|Creative Commons|CC[ -]BY|CC0).{0,160}', text)]
+        log('chmi portal: licence lines:', hits[:4] if hits else 'none found on the front page')
+    except Exception as e:
+        log('chmi portal front page failed:', e)
+    items = chmi_files(3)
+    log('chmi files:', [(t.strftime('%Y-%m-%dT%H:%MZ'), u.rsplit('/', 1)[-1]) for t, u in items])
+    if not items:
+        return 1
+    import h5py
+    blob = get(items[-1][1]).content
+    log('chmi file bytes', len(blob))
+    with h5py.File(io.BytesIO(blob), 'r') as f:
+        def walk(name, obj):
+            attrs = {k: (v.decode() if isinstance(v, bytes) else (v.tolist() if hasattr(v, 'tolist') else v)) for k, v in obj.attrs.items()}
+            log('  ', name, getattr(obj, 'shape', ''), json.dumps(attrs, default=str)[:400])
+        f.visititems(walk)
+        log('  root attrs', json.dumps({k: (v.decode() if isinstance(v, bytes) else str(v)) for k, v in f.attrs.items()})[:400])
+    rate, grid, scale, quantity = convert.read_odim(blob)
+    rate = odim_rate(rate, quantity)
+    log('chmi read: quantity', quantity, 'scale', scale, 'grid', {k: v for k, v in grid.items() if k != 'proj'}, 'proj', grid['proj'][:120])
+    log('chmi rate: finite share', round(float(np.mean(np.isfinite(rate))), 3), 'wet share', round(float(np.nanmean(rate >= 0.1)), 4) if np.isfinite(rate).any() else 'n/a')
+    return 0
 
 
 def knmi_read(blob):
@@ -762,7 +844,7 @@ def main():
     a = ap.parse_args()
     only = [x for x in a.only.split(',') if x]
     if a.probe:
-        return probe() if (not only or 'se' in only) else (probe_austria() if 'at' in only else (probe_thredds() if 'thredds' in only else (probe_dmi() if 'dmi' in only else probe_norway())))
+        return probe() if (not only or 'se' in only) else (probe_austria() if 'at' in only else (probe_thredds() if 'thredds' in only else (probe_dmi() if 'dmi' in only else (probe_chmi() if 'cz' in only else probe_norway()))))
     os.makedirs(a.out, exist_ok=True)
     for src in SOURCES:
         if only and src['id'] not in only:
@@ -770,9 +852,9 @@ def main():
         if src.get('retired') and src['id'] not in only:
             log(src['id'], 'retired —', src['retired']); continue
         d = a.out + '/' + src['id']; os.makedirs(d, exist_ok=True)
-        if src.get('kind') in ('geosphere', 'nordic', 'dmi', 'knmi', 'meteofrance'):
+        if src.get('kind') in ('geosphere', 'nordic', 'dmi', 'knmi', 'meteofrance', 'chmi'):
             try:
-                {'geosphere': run_geosphere, 'nordic': run_nordic, 'dmi': run_dmi, 'knmi': run_knmi, 'meteofrance': run_meteofrance}[src['kind']](src, a)
+                {'geosphere': run_geosphere, 'nordic': run_nordic, 'dmi': run_dmi, 'knmi': run_knmi, 'meteofrance': run_meteofrance, 'chmi': run_chmi}[src['kind']](src, a)
             except Exception as e:
                 log(src['id'], 'failed:', e)
                 json.dump({'ok': False, 'error': str(e)[:300], 'at': dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}, open(d + '/status.json', 'w'), indent=1)

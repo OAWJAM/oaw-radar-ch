@@ -24,6 +24,9 @@ jobs:
         continue-on-error: true
       - run: python3 grids.py --probe --only dmi
         continue-on-error: true
+      # ČHMÚ (7 Nov, the owner: «CZ ja»): the portal's licence lines, the newest MAX_Z files, one file's HDF5 layout
+      - run: python3 grids.py --probe --only cz
+        continue-on-error: true
       # Rainbow.ai (7 Nov): with the secret, what each layer answers (snapshot, a tile's size and mode, the dbz_u8 palette); without it, «no key — skipped»
       - run: python3 rainbow.py --probe
         continue-on-error: true
