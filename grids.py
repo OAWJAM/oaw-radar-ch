@@ -418,10 +418,28 @@ def probe_chmi():
             log('  ', name, getattr(obj, 'shape', ''), json.dumps(attrs, default=str)[:400])
         f.visititems(walk)
         log('  root attrs', json.dumps({k: (v.decode() if isinstance(v, bytes) else str(v)) for k, v in f.attrs.items()})[:400])
+    with h5py.File(io.BytesIO(blob), 'r') as f:                                   # the raw values: how many are above undetect — a dry picture or a wrong field?
+        raw = f['dataset1/data1/data'][...]
+        vals, cnts = np.unique(raw, return_counts=True)
+        log('chmi raw: dtype', raw.dtype, 'min', int(raw.min()), 'max', int(raw.max()), 'distinct', len(vals), 'share raw>0', round(float(np.mean(raw > 0)), 4), 'top values', [(int(v), int(c)) for v, c in sorted(zip(vals, cnts), key=lambda x: -x[1])[:8]])
+        for k in list(f.keys()):
+            log('  group', k, list(f[k].keys()) if hasattr(f[k], 'keys') else '')
     rate, grid, scale, quantity = convert.read_odim(blob)
     rate = odim_rate(rate, quantity)
     log('chmi read: quantity', quantity, 'scale', scale, 'grid', {k: v for k, v in grid.items() if k != 'proj'}, 'proj', grid['proj'][:120])
-    log('chmi rate: finite share', round(float(np.mean(np.isfinite(rate))), 3), 'wet share', round(float(np.nanmean(rate >= 0.1)), 4) if np.isfinite(rate).any() else 'n/a')
+    log('chmi rate: finite share', round(float(np.mean(np.isfinite(rate))), 3), 'wet share', round(float(np.nanmean(rate >= 0.1)), 4) if np.isfinite(rate).any() else 'n/a',
+        'dBZ max', round(float(np.nanmax(raw.astype(np.float32) * 0.5 - 32.0)), 1))
+    # the portal's own PNG of the same minute: how much of it is painted (a cross-check of «dry»)
+    try:
+        stamp = items[-1][0]
+        png = CHMI.replace('/hdf5/', '/png/') + 'pacz2gmaps3.z_max3d.%s.%s.0.png' % (stamp.strftime('%Y%m%d'), stamp.strftime('%H%M'))
+        r = requests.get(png, headers={'User-Agent': UA}, timeout=60)
+        log('chmi png', png.rsplit('/', 1)[-1], r.status_code, len(r.content), 'bytes')
+        if r.ok:
+            im = Image.open(io.BytesIO(r.content)).convert('RGBA'); arr = np.asarray(im)
+            log('chmi png: size', im.size, 'painted share', round(float(np.mean(arr[..., 3] > 0)), 4), 'distinct colours', len(np.unique(arr.reshape(-1, 4), axis=0)))
+    except Exception as e:
+        log('chmi png failed:', e)
     return 0
 
 
