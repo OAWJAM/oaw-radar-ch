@@ -746,10 +746,42 @@ def mf_token(app_id):
     return str(j.get('access_token', ''))
 
 
+def archive_members(content):
+    """The paquet's members whatever the container (7 Nov 22:37: the first 200 came as application/gzip, 11.8 MB — not the zip the portal's
+    page promised): zip, tar, tar.gz, or one gzipped file — opened by the bytes' magic, never by the header. Returns (kind, [(name, bytes)])."""
+    import zipfile, tarfile, gzip
+    def kind_of(b):
+        if b[:4] == b'PK\x03\x04': return 'zip'
+        if b[:2] == b'\x1f\x8b': return 'gzip'
+        if len(b) > 262 and b[257:262] == b'ustar': return 'tar'
+        if b[:4] == b'\x89HDF': return 'hdf5'
+        if b[:4] == b'BUFR': return 'bufr'
+        if b[:4] in (b'II*\x00', b'MM\x00*'): return 'tiff'
+        if b[:4] == b'GRIB': return 'grib'
+        return 'unknown'
+    k = kind_of(content)
+    if k == 'zip':
+        z = zipfile.ZipFile(io.BytesIO(content)); return 'zip', [(n, z.read(n)) for n in z.namelist() if not n.endswith('/')]
+    if k == 'tar':
+        t = tarfile.open(fileobj=io.BytesIO(content), mode='r:'); return 'tar', [(m.name, t.extractfile(m).read()) for m in t.getmembers() if m.isfile()]
+    if k == 'gzip':
+        try:
+            t = tarfile.open(fileobj=io.BytesIO(content), mode='r:gz')
+            mem = [(m.name, t.extractfile(m).read()) for m in t.getmembers() if m.isfile()]
+            if mem: return 'tar.gz', mem
+        except tarfile.TarError:
+            pass
+        inner = gzip.decompress(content)
+        ki = kind_of(inner)
+        if ki in ('zip', 'tar'):
+            kk, mem = archive_members(inner); return 'gzip+' + kk, mem
+        return 'gzip', [('paquet.' + ki, inner)]
+    return k, [('paquet.' + k, content)]
+
+
 def run_meteofrance(src, a):
-    """Météo-France's Paquet Radar: the last quarter hour's mosaics as a zip — the members are logged on every run until the reader knows them
-    (the first pass with a key tells the format); ODIM HDF5 and GeoTIFF members are tried."""
-    import zipfile
+    """Météo-France's Paquet Radar: the last quarter hour's mosaics in one archive — the members are logged on every run until the reader knows
+    them (the first pass with a key tells the format); ODIM HDF5 and GeoTIFF members are tried, by their bytes rather than their names."""
     app = os.environ.get(src['secret'], '').strip()
     if not app:
         log(src['id'], 'skipped — no secret', src['secret']); return 0
@@ -757,37 +789,42 @@ def run_meteofrance(src, a):
     tok = mf_token(app)
     if not tok:
         raise RuntimeError('no token from the portal')
-    r = requests.get(MF_PAQUET, headers={'Authorization': 'Bearer ' + tok, 'Accept': 'application/zip, */*', 'User-Agent': UA}, timeout=180)
+    r = requests.get(MF_PAQUET, headers={'Authorization': 'Bearer ' + tok, 'Accept': '*/*', 'User-Agent': UA}, timeout=180)
     log(src['id'], 'paquet', r.status_code, r.headers.get('content-type'), len(r.content), 'bytes')
     if r.status_code in (401, 403):                                                                      # the token is good, the API is not open to the application (22:27: 403) — the portal's subscription is missing
         body = re.sub(r'\s+', ' ', r.text[:200])
-        raise RuntimeError('%d from the Paquet Radar API: %s — the application has no subscription to «Paquet Radar» (DPPaquetRadar) in the portal: Mes API → the API → Souscrire → DefaultApplication' % (r.status_code, body))
+        raise RuntimeError('%d from the Paquet Radar API: %s — the application has no subscription to «Paquet Radar» (DPPaquetRadar) in the portal: Mes applications → DefaultApplication' % (r.status_code, body))
     r.raise_for_status()
-    z = zipfile.ZipFile(io.BytesIO(r.content))
-    names = z.namelist()
-    log(src['id'], 'members', len(names), names[:40])
+    kind, members = archive_members(r.content)
+    log(src['id'], 'archive', kind, 'members', len(members), [(n, len(b), b[:4]) for n, b in members[:40]])
     got = 0
-    for name in names:
+    def magic(b):
+        return 'hdf5' if b[:4] == b'\x89HDF' else 'tiff' if b[:4] in (b'II*\x00', b'MM\x00*') else 'bufr' if b[:4] == b'BUFR' else 'grib' if b[:4] == b'GRIB' else 'gzip' if b[:2] == b'\x1f\x8b' else '?'
+    for name, blob in members:
         low = name.lower()
         try:
-            blob = z.read(name)
-            if low.endswith(('.h5', '.hdf5', '.hdf')):
+            if magic(blob) == 'gzip':                                                                  # a member gzipped on its own
+                import gzip; blob = gzip.decompress(blob); low = re.sub(r'\.gz$', '', low)
+            mg = magic(blob)
+            m = re.search(r'(\d{8})[T_]?(\d{4})', name); stamp = parse_time(m.group(1)[:4] + '-' + m.group(1)[4:6] + '-' + m.group(1)[6:8] + 'T' + m.group(2)[:2] + ':' + m.group(2)[2:] + 'Z') if m else dt.datetime.now(dt.timezone.utc).replace(second=0, microsecond=0)
+            if mg == 'hdf5' or low.endswith(('.h5', '.hdf5', '.hdf')):
                 rate, grid, scale, quantity = convert.read_odim(blob)
+                log('  member', name, len(blob), 'bytes hdf5', quantity, getattr(rate, 'shape', None), {k: grid.get(k) for k in ('xsize', 'ysize', 'xscale', 'yscale') if isinstance(grid, dict) and k in grid})
                 rate = odim_rate(rate, quantity)
                 field, _, size = convert.reproject(rate, grid, src['bbox'], step)
-                m = re.search(r'(\d{8})[T_]?(\d{4})', name); stamp = parse_time(m.group(1)[:4] + '-' + m.group(1)[4:6] + '-' + m.group(1)[6:8] + 'T' + m.group(2)[:2] + ':' + m.group(2)[2:] + 'Z') if m else dt.datetime.now(dt.timezone.utc).replace(second=0, microsecond=0)
-            elif low.endswith(('.tif', '.tiff')):
+            elif mg == 'tiff' or low.endswith(('.tif', '.tiff')):
                 data, frame = read_geotiff(blob)
                 rate = data.astype(np.float32); rate[rate < 0] = np.nan
                 field, size = reproject_grid(rate, frame, src['bbox'], step)
-                m = re.search(r'(\d{8})[T_]?(\d{4})', name); stamp = parse_time(m.group(1)[:4] + '-' + m.group(1)[4:6] + '-' + m.group(1)[6:8] + 'T' + m.group(2)[:2] + ':' + m.group(2)[2:] + 'Z') if m else dt.datetime.now(dt.timezone.utc).replace(second=0, microsecond=0)
             else:
-                log('  member', name, len(blob), 'bytes — not read yet (format unknown to the reader)'); continue
+                log('  member', name, len(blob), 'bytes', mg, repr(blob[:24]), '— not read yet (format unknown to the reader)'); continue
             if os.path.exists(d + '/frames/' + stamp.strftime('%Y%m%d%H%M') + '.png'):
                 continue
             field[np.isfinite(field) & (field < 0.1)] = 0.0
             img = convert.paint(field)
             wet = float(np.nanmean(field >= 0.1)) if np.isfinite(field).any() else 0.0
+            if convert.coverage_stale(d, stamp):
+                convert.write_coverage(d, np.isfinite(field), src['bbox'], step, src['source'])
             k, n = write_frames(a.out, src, stamp, img, a.frames, {'wet_share': round(wet, 4), 'width': size[0], 'height': size[1], 'step_deg': step, 'url': MF_PAQUET, 'note': src.get('note', ''), 'member': name})
             log('  done', k, size, 'wet share', round(wet, 4), 'frames', n, 'from', name); got += 1
         except Exception as e:
