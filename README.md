@@ -59,22 +59,35 @@ field had 0.7 % of its cells above undetect, all under 5 dBZ, and the PNG 2.4 % 
 The Nordic composite carries the Swedish and Finnish radars, so the single sources `se` (SMHI) and `fi` (FMI) are retired — marked `retired` in their tables, skipped by the runs, their folders removed from the site (`RETIRED` in wms.py). Their code stays; `--only se` or `--only fi` runs one on purpose.
 
 
-## The world mosaic — Rainbow.ai (7 Nov, ready to switch on)
+## Rainbow.ai — the AI radar, the precipitation type, the clouds, a nowcast (7 Nov, ready to switch on)
 
-`rainbow.py` fetches Rainbow.ai's radar mosaic as Web-Mercator XYZ tiles, stitches them, decodes the reflectivity (`color=dbz_u8`: the red channel carries dBZ + 32, bit 7 marks snow, a transparent pixel means no radar), paints the mosaic in this site's own scale and publishes it like every other source — as `rb-<area>/` with `frames.json` (`crs: EPSG:3857`, which the boards lay on their Mercator chart in one piece), `latest.png`, `status.json`, `coverage.json` (the reach's edge from the transparent pixels) and `usage.json` (the month's tile count). It lies at the bottom of the layer; the national pictures sit on it.
+`rainbow.py` fetches Rainbow.ai's products as Web-Mercator XYZ tiles, stitches them and publishes each like every other source — `rb-<area>/` for the precipitation (the picture the boards draw at the bottom of the radar layer; `color=dbz_u8`: the red channel carries dBZ + 32, bit 7 marks snow, a transparent pixel means no radar, so the mosaic is painted in this site's own scale), `rb-<area>-type/` for the **precipitation type** (rain, snow, mixed — Rainbow's own palette), `rb-<area>-clouds/` for the **clouds**. Each folder has `frames.json` (`crs: EPSG:3857`, `kind: precip | type | clouds`), `latest.png`, `status.json`, `coverage.json` (the reach's edge from the transparent pixels; not for clouds) and `usage.json`. The precipitation folder may also hold `nowcast/` + `nowcast.json` (the steps beyond now, when `RAINBOW_FRAMES` asks for them) and `coverage-map.png` + `coverage-map.json` (**where ground radar reaches** — grey — and where only the satellite estimate stands — white; drawn once a day). The boards draw the `precip` kind; the others are listed for them to take up (the installation's owner page names them).
 
 **Off until the secret exists.** Settings → Secrets and variables → Actions → New repository secret → `RAINBOW_API_KEY` (the token from developer.rainbow.ai → Profile). Without it the step logs «no key — skipped» and the run stays green. The key travels in a header, never in a URL or a log.
 
-**Steered by repository variables** (the same page, the *Variables* tab; a missing one takes the default):
+**Variables** (Settings → Secrets and variables → Actions → Variables; none is needed for the defaults):
 
-| Variable | Default | Meaning |
+| Variable | Default | What it does |
 |---|---|---|
-| `RAINBOW_LAYER` | `radars` | `radars` = the radar mosaic (zoom 0–7) · `precip-global` = radar + satellite + nowcast, the oceans too (zoom 0–12) · `precip` |
-| `RAINBOW_AREAS` | `world:3` | a comma list of `<name>:<zoom>[:<x0>-<x1>:<y0>-<y1>]`; presets `world:3` (8 × 8 = 64 tiles, the whole world, ~20 km a pixel) and `europe:5` (8 × 6 = 48 tiles, 22.5 W – 67.5 E · 21.9 – 66.5 N, ~5 km a pixel); `world:3,europe:5` takes both |
+| `RAINBOW_LAYERS` | `precip-global,type,clouds` | the products, comma-separated: `precip-global` = the «AI radar» (radar + satellite + nowcast, the oceans too, zoom 0–12) · `precip` = radar + nowcast · `radars` = the radar mosaic alone (zoom 0–7) · `type` = the mosaic painted by precipitation type (zoom 0–7) · `clouds` = cloud cover from satellite (zoom 0–7). The older `RAINBOW_LAYER` (one product) still counts when this is unset. |
+| `RAINBOW_AREAS` | `europe:5` | a comma list of `<name>:<zoom>[:<x0>-<x1>:<y0>-<y1>]`; presets `europe:5` (8 × 6 = 48 tiles, 22.5 W – 67.5 E · 21.9 – 66.5 N — the Canaries, Egypt and the Levant inside, ~5 km a pixel), `eu:5` (6 × 5 = 30 tiles, 22.5 W – 45 E · 32 – 66.5 N), `world:3` (8 × 8 = 64 tiles, ~20 km a pixel); several: `europe:5,world:3` |
+| `RAINBOW_FRAMES` | `0` | the nowcast steps in minutes for the precipitation products — a list `0,30,60,120,180,240` or a range `0-240/10` (25 steps); 0 is the picture of now, the rest go to `nowcast/` |
 | `RAINBOW_CADENCE_MIN` | `30` | a new picture only when the newest one is at least this old (the snapshot's clock) — the lever on the cost |
-| `RAINBOW_MONTHLY_TILES` | `100000` | the month's tile budget; reached, the runs skip until the next month and `status.json` says so — never a surprise bill |
-| `RAINBOW_COLOR` | `dbz_u8` | the palette asked of the API; `dbz_u8` is decoded into this site's scale, a number (0–9) keeps Rainbow's own picture as it is |
+| `RAINBOW_MONTHLY_TILES` | `100000` | the month's tile budget **over every product and area**; reached, the runs skip until the next month and `status.json` says so — never a surprise bill |
+| `RAINBOW_COLOR` | `dbz_u8` | the palette asked for the precipitation products; `dbz_u8` is decoded into this site's scale, a number (0–9) keeps Rainbow's own picture |
+| `RAINBOW_TYPE_COLOR` | `0` | the palette of the type product |
+| `RAINBOW_COVERAGE_MAP` | `1` | once a day the radars' coverage mask of each area as `coverage-map.png` (one area's tiles a day) |
 
-**What it costs** (Rainbow's tile price as read on 6 Nov: 30 000 tiles a month free, then 0.0002 $ a tile; the price list is theirs to change): one snapshot call plus the area's tiles per fetch. `world:3` at 30 min = 48 × 65 × 30 ≈ 94 000 tiles a month ≈ **13 $**; at 15 min ≈ 31 $; at 60 min ≈ 3 $. `europe:5` at 30 min ≈ 8 $, at 15 min ≈ 22 $. Both areas at 30 min ≈ 27 $. GitHub runs the workflow about once an hour under load (the schedule says ten minutes), so the real cadence — and the bill — is often below the variable; `usage.json` keeps the count.
+**What it costs** (Rainbow's list as read on 7 Nov: Tiles API 30 000 tiles a month free, then 0.20 $ a thousand; the Nowcast API 5 000 requests free, then 0.10 $ a thousand — theirs to change): tiles a month = products × the area's tiles × steps × runs. With GitHub's schedule the runs come every ten minutes at best, about hourly under load, so the real bill is often below the figure.
 
-**First keyed run**: Actions → *probe* → Run workflow logs what each layer answers (the snapshot, a tile's size and mode, whether `dbz_u8` is served for the chosen layer). Should a layer not serve `dbz_u8`, set `RAINBOW_COLOR` to a palette number — the picture then comes as Rainbow paints it, the coverage edge still from its transparent pixels.
+| Set-up (europe:5 = 48 tiles) | every 30 min | every 10 min |
+|---|---|---|
+| the type map alone | ≈ 8 $ | ≈ 35 $ |
+| the defaults: AI radar now + type + clouds | ≈ 35 $ | ≈ 118 $ |
+| the defaults with a 6-step loop (`0,30,60,120,180,240`) | ≈ 105 $ | ≈ 326 $ |
+| the defaults with the 25-step loop (`0-240/10`) | ≈ 367 $ | ≈ 1114 $ |
+| `eu:5` (30 tiles) instead of `europe:5` | × 0.63 | × 0.63 |
+
+The clouds are the cheapest to drop (the boards have Meteosat for free); the loop and the cadence are the levers. `usage.json` in every folder keeps the count; the budget variable is the brake.
+
+**First keyed run**: Actions → *probe* → Run workflow logs what each product answers (the snapshot, a tile's size and mode, whether `dbz_u8` is served, whether the forecast axis answers). Should a product not serve `dbz_u8`, set `RAINBOW_COLOR` to a palette number — the picture then comes as Rainbow paints it, the coverage edge still from its transparent pixels.

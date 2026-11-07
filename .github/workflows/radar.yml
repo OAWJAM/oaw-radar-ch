@@ -43,12 +43,16 @@ jobs:
           KNMI_API_KEY: ${{ secrets.KNMI_API_KEY }}
           METEOFRANCE_APP_ID: ${{ secrets.METEOFRANCE_APP_ID }}
           AEMET_API_KEY: ${{ secrets.AEMET_API_KEY }}
-      # Rainbow.ai's world-wide radar mosaic (7 Nov): off until the secret RAINBOW_API_KEY exists; the variables steer layer, areas, cadence and the month's tile budget
+      # Rainbow.ai's products (7 Nov): off until the secret RAINBOW_API_KEY exists; the variables steer the products, areas, nowcast steps, cadence and the month's tile budget
       - run: python3 rainbow.py --out site --frames 12
         continue-on-error: true
         env:
           RAINBOW_API_KEY: ${{ secrets.RAINBOW_API_KEY }}
           RAINBOW_LAYER: ${{ vars.RAINBOW_LAYER }}
+          RAINBOW_LAYERS: ${{ vars.RAINBOW_LAYERS }}
+          RAINBOW_FRAMES: ${{ vars.RAINBOW_FRAMES }}
+          RAINBOW_TYPE_COLOR: ${{ vars.RAINBOW_TYPE_COLOR }}
+          RAINBOW_COVERAGE_MAP: ${{ vars.RAINBOW_COVERAGE_MAP }}
           RAINBOW_AREAS: ${{ vars.RAINBOW_AREAS }}
           RAINBOW_CADENCE_MIN: ${{ vars.RAINBOW_CADENCE_MIN }}
           RAINBOW_MONTHLY_TILES: ${{ vars.RAINBOW_MONTHLY_TILES }}

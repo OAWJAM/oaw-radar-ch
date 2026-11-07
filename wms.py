@@ -202,7 +202,7 @@ def write_sources(out, done):
             st = json.load(open(out + '/' + d + '/status.json'))
         except Exception:
             pass
-        lst.append({'id': d, 'name': NAMES.get(d) or j.get('name') or d.upper(), 'path': d, 'licence': j.get('licence', ''), 'source': j.get('source', ''), 'product': j.get('product', ''), 'ok': bool(st.get('ok', d in done)), 'updated': j.get('updated', '')})
+        lst.append({'id': d, 'name': NAMES.get(d) or j.get('name') or d.upper(), 'path': d, 'kind': j.get('kind', 'precip'), 'licence': j.get('licence', ''), 'source': j.get('source', ''), 'product': j.get('product', ''), 'ok': bool(st.get('ok', d in done)), 'updated': j.get('updated', '')})   # kind (7 Nov): precip is drawn as radar; type and clouds are Rainbow's other products, listed for the boards to take up later
     if os.path.exists(out + '/frames.json'):
         lst.append(ROOT_SOURCE)
     json.dump({'updated': dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), 'sources': lst}, open(out + '/sources.json', 'w'), indent=1)
