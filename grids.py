@@ -668,6 +668,15 @@ def run_knmi(src, a):
     files = knmi_files(key, max(1, a.backfill))
     if not files:
         raise RuntimeError('no file listed')
+    try:                                                                                                 # the frames painted as a deluge over half the domain (the no-data square of 7 Nov 22:20) are redone, not kept for an hour:
+        fj = json.load(open(d + '/frames.json')) if os.path.exists(d + '/frames.json') else {}          # frames.json carries the newest frame's wet share; a bad one marks the whole set of its reader
+        if float(fj.get('wet_share', 0) or 0) > 0.5 or os.environ.get('KNMI_REDO', '') == '1':
+            n = 0
+            for f in os.listdir(d + '/frames') if os.path.isdir(d + '/frames') else []:
+                if re.match(r'^\d{12}\.png$', f): os.remove(d + '/frames/' + f); n += 1
+            log(src['id'], 'redone — the frames were a deluge (wet share %s): %d dropped' % (fj.get('wet_share'), n))
+    except Exception as e:
+        log(src['id'], 'frames.json not read:', e)
     todo = [(t, nm) for t, nm in files if not os.path.exists(d + '/frames/' + t.strftime('%Y%m%d%H%M') + '.png')]
     if not todo:
         log(src['id'], 'already there', files[-1][0].strftime('%Y%m%d%H%M')); return 0
