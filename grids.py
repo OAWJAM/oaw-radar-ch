@@ -39,6 +39,9 @@ SOURCES = [
     {'id': 'no', 'kind': 'nordic', 'name': 'Norway · Sweden · Finland (Nordic composite)', 'source': 'MET Norway', 'licence': 'CC BY 4.0, Source: MET Norway', 'product': 'Nordic radar composite (pcappi 0 dBZ)',
      'bbox': (0.5, 54.0, 38.0, 72.0), 'step_min': 5, 'step': 0.02,
      'note': 'The Nordic composite from MET Norway\'s THREDDS server — the radars of Norway, Sweden and Finland on one 1 km Lambert grid every 5 min (6 Nov, late: data, not the rendered picture of api.met.no)'},
+    {'id': 'es', 'kind': 'aemet', 'name': 'Spain', 'source': 'AEMET', 'licence': 'AEMET OpenData, Source: AEMET', 'product': 'National radar composite (picture)', 'bbox': (-10.0, 35.0, 5.0, 44.5), 'step_min': 10, 'step': 0.02,
+     'secret': 'AEMET_API_KEY', 'probe_only': True,
+     'note': 'AEMET\'s national radar composite from OpenData (api/red/radar/nacional) — a picture, georeferenced by hand; the key is the repository secret AEMET_API_KEY (7 Nov 22:39; the first pass keeps the raw picture as es/_probe.png for the calibration)'},
     {'id': 'it', 'kind': 'dpc', 'name': 'Italy', 'source': 'Radar-DPC', 'licence': 'CC BY-SA, Source: Radar-DPC (Dipartimento della Protezione Civile)', 'product': 'National radar mosaic (SRI, rain intensity; VMI when SRI is missing)',
      'bbox': (6.0, 35.5, 19.0, 47.5), 'step_min': 5, 'step': 0.01,
      'note': 'Radar-DPC, the national mosaic of the Dipartimento della Protezione Civile (radar-api.protezionecivile.it, docs dpc-radar.readthedocs.io): the newest product as a GeoTIFF on a 1 km Transverse Mercator grid, asked with the platform\'s own origin header; the docs name CC BY-SA with «Radar-DPC» as the source (7 Nov, the owner: «Italien go»)'},
@@ -50,6 +53,7 @@ DMI = 'https://opendataapi.dmi.dk/v1/radardata'
 KNMI = 'https://api.dataplatform.knmi.nl/open-data/v1/datasets/radar_reflectivity_composites/versions/2.0/files'
 MF_TOKEN = 'https://portail-api.meteofrance.fr/token'
 MF_PAQUET = 'https://public-api.meteofrance.fr/public/DPPaquetRadar/v1/mosaique/paquet'
+AEMET = 'https://opendata.aemet.es/opendata/api/red/radar/nacional'
 THREDDS = 'https://thredds.met.no/thredds'
 CHMI = 'https://opendata.chmi.cz/meteorology/weather/radar/composite/maxz/hdf5/'
 CHMI_ROOT = 'https://opendata.chmi.cz/'
@@ -849,6 +853,44 @@ def run_meteofrance(src, a):
     return got
 
 
+def run_aemet(src, a):
+    """AEMET's national radar composite (OpenData, api/red/radar/nacional): a two-step call — the API answers with a short-lived link, the link
+    with the picture. The first passes (probe_only) keep the raw picture at es/_probe.png with its size and mode in the log, so the frame can
+    be calibrated by hand against the coastline; the reader for the colours and the frame follows."""
+    key = os.environ.get(src['secret'], '').strip()
+    if not key:
+        log(src['id'], 'skipped — no secret', src['secret']); return 0
+    d = a.out + '/' + src['id']
+    r = requests.get(AEMET, headers={'api_key': key, 'Accept': 'application/json', 'User-Agent': UA}, params={'api_key': key}, timeout=60)
+    log(src['id'], 'api', r.status_code, r.headers.get('content-type'), len(r.content), 'bytes')
+    try:
+        j = r.json()
+    except ValueError:
+        raise RuntimeError('the AEMET API answered %d without JSON: %s' % (r.status_code, re.sub(r'\s+', ' ', r.text[:160])))
+    if r.status_code != 200 or int(j.get('estado', 0) or 0) != 200 or not j.get('datos'):
+        raise RuntimeError('the AEMET API answered %d: estado %s — %s' % (r.status_code, j.get('estado'), j.get('descripcion', '')))
+    r2 = requests.get(j['datos'], headers={'User-Agent': UA}, timeout=120)
+    log(src['id'], 'datos', r2.status_code, r2.headers.get('content-type'), len(r2.content), 'bytes', 'last-modified', r2.headers.get('last-modified'))
+    r2.raise_for_status()
+    blob = r2.content
+    if j.get('metadatos'):
+        try:
+            r3 = requests.get(j['metadatos'], headers={'User-Agent': UA}, timeout=60); log(src['id'], 'metadatos', r3.status_code, re.sub(r'\s+', ' ', r3.text[:700]))
+        except Exception as e:
+            log(src['id'], 'metadatos failed:', e)
+    im = Image.open(io.BytesIO(blob))
+    log(src['id'], 'picture', im.format, im.mode, im.size, 'frames', getattr(im, 'n_frames', 1), 'info', {k: (v if isinstance(v, (int, float, str)) else str(type(v))) for k, v in list(im.info.items())[:8]})
+    os.makedirs(d, exist_ok=True)
+    im.convert('RGBA').save(d + '/_probe.png')
+    open(d + '/_probe.' + (im.format or 'bin').lower(), 'wb').write(blob)
+    if src.get('probe_only'):
+        json.dump({'ok': False, 'probe': True, 'size': list(im.size), 'mode': im.mode, 'format': im.format, 'at': dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+                   'note': 'the raw picture kept for the calibration; no frames yet'}, open(d + '/status.json', 'w'), indent=1)
+        log(src['id'], 'probe kept — the reader for the colours and the frame follows')
+        return 0
+    raise RuntimeError('the AEMET reader is not written yet')
+
+
 def nordic_files(n=12):
     """The newest n files of the Nordic composite in the THREDDS folder latest/ (two days of 5-min files), oldest first: [(stamp, path)]."""
     r = get(NORDIC_CAT)
@@ -1144,9 +1186,9 @@ def main():
         if src.get('await_probe') and src['id'] not in only:
             log(src['id'], 'waits for its probe —', src['await_probe']); continue
         d = a.out + '/' + src['id']; os.makedirs(d, exist_ok=True)
-        if src.get('kind') in ('geosphere', 'nordic', 'dmi', 'knmi', 'meteofrance', 'chmi', 'dpc'):
+        if src.get('kind') in ('geosphere', 'nordic', 'dmi', 'knmi', 'meteofrance', 'chmi', 'dpc', 'aemet'):
             try:
-                {'geosphere': run_geosphere, 'nordic': run_nordic, 'dmi': run_dmi, 'knmi': run_knmi, 'meteofrance': run_meteofrance, 'chmi': run_chmi, 'dpc': run_dpc}[src['kind']](src, a)
+                {'geosphere': run_geosphere, 'nordic': run_nordic, 'dmi': run_dmi, 'knmi': run_knmi, 'meteofrance': run_meteofrance, 'chmi': run_chmi, 'dpc': run_dpc, 'aemet': run_aemet}[src['kind']](src, a)
             except Exception as e:
                 log(src['id'], 'failed:', e)
                 json.dump({'ok': False, 'error': str(e)[:300], 'at': dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}, open(d + '/status.json', 'w'), indent=1)
