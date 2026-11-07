@@ -496,7 +496,7 @@ def run_dpc(src, a):
             wet = float(np.nanmean(field >= 0.1)) if np.isfinite(field).any() else 0.0
             if product == 'SRI' and convert.coverage_stale(d, stamp):                  # SRI keeps 0.0 where a radar sees dry ground and -9999 beyond the reach; VMI masks everything under 10 dBZ, so its blanks say nothing about the reach
                 convert.write_coverage(d, np.isfinite(field), src['bbox'], step, src['source'])
-            k, n = write_frames(a.out, src, stamp, img, a.frames, {'wet_share': round(wet, 4), 'width': size[0], 'height': size[1], 'step_deg': step, 'url': DPC_API, 'note': src.get('note', ''), 'quantity': product, 'crs': frame.get('crs') or ('EPSG:%s' % frame.get('epsg'))})
+            k, n = write_frames(a.out, src, stamp, img, a.frames, {'wet_share': round(wet, 4), 'width': size[0], 'height': size[1], 'step_deg': step, 'url': DPC_API, 'note': src.get('note', ''), 'quantity': product, 'source_crs': frame.get('crs') or ('EPSG:%s' % frame.get('epsg'))})   # the picture itself is lon/lat (write_frames says crs EPSG:4326); this names the file's own grid
             log('  done', k, size, 'wet share', round(wet, 4), 'frames', n, 'product', product, 'epsg', frame.get('epsg')); return 1
         except Exception as e:
             last_err = e; log(src['id'], product, 'failed:', e)
