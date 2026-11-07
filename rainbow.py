@@ -16,7 +16,7 @@ run logs «no key — skipped» and stays green. Repository *variables* (same pa
                                                                               presets: europe:5 (48 tiles, 22.5 W – 67.5 E · 21.9 – 66.5 N — the Canaries,
                                                                               Egypt and the Levant inside), eu:5 (30 tiles, 22.5 W – 45 E · 32 – 66.5 N),
                                                                               world:3 (64 tiles); several: europe:5,world:3
-  RAINBOW_FRAMES         0 (default)                                        — the nowcast steps in minutes for the precip products: a list «0,30,60,120,180,240»
+  RAINBOW_FRAMES         0 (default)                                        — the nowcast steps in minutes for the precip products: a list «0,30,60,120,180,240», «loop» (every cadence to +240)
                                                                               or a range «0-240/10»; 0 is the picture of now, the rest go to nowcast/
   RAINBOW_CADENCE_MIN    30 (default)                                       — a new picture only when the newest is at least this old
   RAINBOW_MONTHLY_TILES  100000 (default)                                   — the month's tile budget over every product and area; reached → skipped until the next month
@@ -254,10 +254,14 @@ def write_area(out, name, z, x0, x1, y0, y1, stamp, img, valid, keep, wet, note,
     return key, len(frames)
 
 
-def frames_wanted(spec):
-    """RAINBOW_FRAMES → the nowcast steps in minutes, 0 always first: «0,30,60» or «0-240/10»; outside 0–240 or off the ten-minute grid → dropped."""
+def frames_wanted(spec, cadence=30):
+    """RAINBOW_FRAMES → the nowcast steps in minutes, 0 always first: «0,30,60» or «0-240/10», or «loop» = every RAINBOW_CADENCE_MIN up to +240
+    (the owner, 7 Nov 20:42, Q40: the steps ahead at the loop's cadence); outside 0–240 or off the ten-minute grid → dropped."""
     out = {0}
     spec = (spec or '0').strip()
+    if spec.lower() in ('loop', 'cadence'):
+        st = max(10, int(round(cadence / 10.0)) * 10)
+        return sorted(set(range(0, 241, st)))
     m = re.match(r'^(\d+)\s*-\s*(\d+)\s*/\s*(\d+)$', spec)
     if m:
         a, b, st = int(m.group(1)), int(m.group(2)), max(10, int(m.group(3)))
@@ -399,7 +403,7 @@ def main():
     type_color = (os.environ.get('RAINBOW_TYPE_COLOR', '') or '0').strip()
     cadence = env_int('RAINBOW_CADENCE_MIN', 30)
     budget = env_int('RAINBOW_MONTHLY_TILES', 100000)
-    steps = frames_wanted(os.environ.get('RAINBOW_FRAMES', ''))
+    steps = frames_wanted(os.environ.get('RAINBOW_FRAMES', ''), cadence)
     want_map = (os.environ.get('RAINBOW_COVERAGE_MAP', '') or '1').strip() not in ('0', 'no', 'off', 'false')
     areas = areas_wanted(os.environ.get('RAINBOW_AREAS', ''))
     if not key:
