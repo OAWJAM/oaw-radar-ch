@@ -49,8 +49,10 @@ The Czech Hydrometeorological Institute publishes its radar products on an **ope
 composites over the Czech Republic every five minutes as ODIM HDF5 (v2.4) and PNG — MAX_Z, PseudoCAPPI 2 km, a merged 1-h precipitation, echo tops and
 two extrapolation forecasts — on a 1 km Mercator grid (EPSG:3857, about 11.3–19.6 E, 48.0–51.5 N). The source `cz` reads the **MAX_Z composite**
 (`composite/maxz/hdf5/T_PABV23_C_OKPR_<YYYYMMDDhhmmss>.hdf`, listed on the folder's index page), reflectivity through Marshall–Palmer like DMI's, onto
-0.01° latitude/longitude; no key. The licence line says CC BY 4.0 with the attribution ČHMÚ — `grids.py --probe --only cz` prints the portal's own
-licence lines so it can be confirmed from the run log (the radar description PDFs name none).
+0.01° latitude/longitude; no key. The licence line says CC BY 4.0 with the attribution ČHMÚ: the ČHMÚ open-data page carries the CC BY 4.0 mark, while the data server and the
+radar description PDFs name none — `grids.py --probe --only cz` prints what the portal's front page says (nothing, as of 7 Nov), the raw value
+histogram of the newest file and how much of the portal's own PNG of that minute is painted (a dry picture is a dry picture: on 7 Nov 09:50Z the
+field had 0.7 % of its cells above undetect, all under 5 dBZ, and the PNG 2.4 % painted).
 
 ## Retired sources (7 Nov)
 
