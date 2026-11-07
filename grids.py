@@ -685,10 +685,39 @@ def run_knmi(src, a):
     return got
 
 
+def mf_app_id(raw):
+    """The application id as the portal wants it: the base64 of key:secret — whatever shape the secret was pasted in (the first keyed run,
+    7 Nov 21:20: the gateway answered a malformed Basic value with a 200 «Request Rejected» page). Quotes, spaces, a «Basic » or
+    «Authorization: Basic » prefix and a trailing newline are dropped; «key:secret» in the clear is encoded. Returns (app_id, note)."""
+    import base64, binascii
+    v = (raw or '').strip().strip('"\'').strip()
+    v = re.sub(r'^(?i:authorization\s*:\s*)?(?i:basic)\s+', '', v).strip().strip('"\'')
+    v = re.sub(r'\s+', '', v)
+    if ':' in v and not re.fullmatch(r'[A-Za-z0-9+/=]+', v):
+        return base64.b64encode(v.encode()).decode(), 'key:secret in the clear — encoded'
+    try:
+        dec = base64.b64decode(v + '=' * (-len(v) % 4), validate=True).decode('utf-8', 'replace')
+        if ':' not in dec:
+            return v, 'base64 that holds no key:secret pair — the portal will reject it; is it the token instead of the application id?'
+        return v, ''
+    except (binascii.Error, ValueError):
+        return v, 'not base64 — the application id is the string after «Basic» in the portal\'s curl box'
+
+
 def mf_token(app_id):
+    app_id, note = mf_app_id(app_id)
+    if note:
+        log('fr app id:', note, '(%d chars)' % len(app_id))
     r = requests.post(MF_TOKEN, data={'grant_type': 'client_credentials'}, headers={'Authorization': 'Basic ' + app_id, 'User-Agent': UA}, timeout=60)
-    r.raise_for_status()
-    return str(r.json().get('access_token', ''))
+    ct = r.headers.get('content-type', '')
+    try:
+        j = r.json()
+    except ValueError:
+        body = re.sub(r'<[^>]+>', ' ', r.text[:300]); body = re.sub(r'\s+', ' ', body).strip()[:160]
+        raise RuntimeError('the token endpoint answered %d %s, no JSON: «%s» — a malformed application id gets the gateway\'s «Request Rejected» page; the secret must be the string after «Basic» in the portal\'s curl (base64 of key:secret), nothing else' % (r.status_code, ct, body))
+    if r.status_code != 200 or not j.get('access_token'):
+        raise RuntimeError('the token endpoint answered %d: %s %s' % (r.status_code, j.get('error', ''), j.get('error_description', '')))
+    return str(j.get('access_token', ''))
 
 
 def run_meteofrance(src, a):
