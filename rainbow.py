@@ -158,12 +158,16 @@ class Rainbow:
         return Image.open(io.BytesIO(r.content)).convert('RGBA')
 
 
-def stitch(rb, snapshot, z, x0, x1, y0, y1):
-    """The area's tiles as one RGBA array (rows × cols of TILE pixels), plus how many tiles came back."""
+def stitch(rb, snapshot, z, x0, x1, y0, y1, skip=None):
+    """The area's tiles as one RGBA array (rows × cols of TILE pixels), plus how many tiles came back.
+    skip(z, x, y) → True leaves a tile out (8 Nov: a tile wholly inside the open-data radars' reach is not fetched — the owner:
+    «von Rainbow nur die Daten ziehen, die nicht als Open Source erhältlich sind»); the mosaic stays transparent there."""
     nx, ny = x1 - x0 + 1, y1 - y0 + 1
     size = None; got = 0; mosaic = None
     for j, y in enumerate(range(y0, y1 + 1)):
         for i, x in enumerate(range(x0, x1 + 1)):
+            if skip is not None and skip(z, x, y):
+                continue
             im = rb.tile(snapshot, z, x, y)
             if im is None:
                 continue
@@ -422,8 +426,20 @@ def main():
     month = now.strftime('%Y-%m')
     log('Rainbow.ai: products', ','.join(tokens), '· areas', ','.join('%s:%d' % (n, z) for n, z, *_ in areas), '· steps', steps, '· cadence', cadence, 'min · budget', budget, 'tiles/month · map', want_map)
     first_precip_done = set()
+    od = None                                                                   # the open-data radars' reach (8 Nov): tiles wholly inside it are left out of the precipitation products
+    if os.environ.get('RAINBOW_SKIP_OPEN', '1') != '0':
+        try:
+            import coverage
+            od = coverage.open_data_mask(a.out)
+            log('open-data reach:', 'none traced yet' if od is None else '%d cells of %.1f° — tiles wholly inside it are not fetched' % (int(od[0].sum()), od[2]))
+        except Exception as e:
+            log('open-data reach not read:', e)
+    def skip_open(z, x, y):
+        if od is None: return False
+        return coverage.inside(od[0], tile_lon(x, z), tile_lat(y + 1, z), tile_lon(x + 1, z), tile_lat(y, z))
     for token in tokens:
         kind, pname, suffix, forecast, zmax = rb.product(token, color if kind_of(token) == 'precip' else (type_color if token == 'type' else ''))
+        skip = skip_open if kind == 'precip' else None                           # the type and the clouds have no open-data twin
         try:
             snap = rb.snapshot()
         except Exception as e:
@@ -438,8 +454,9 @@ def main():
             if z > zmax:
                 log(folder, 'zoom', z, 'is beyond the product\'s', zmax, '— skipped'); status(d, False, 'zoom %d beyond the product\'s %d' % (z, zmax)); continue
             n_tiles = (x1 - x0 + 1) * (y1 - y0 + 1)
+            n_skip = sum(1 for yy in range(y0, y1 + 1) for xx in range(x0, x1 + 1) if skip is not None and skip(z, xx, yy))   # inside the open-data reach (8 Nov)
             map_due = want_map and kind == 'precip' and name not in first_precip_done and coverage_map_stale(d)
-            n_need = n_tiles * ((len(steps) if forecast else 1) + (1 if map_due else 0))
+            n_need = (n_tiles - n_skip) * ((len(steps) if forecast else 1)) + (n_tiles if map_due else 0)
             u = usage_load(d)
             if u['month'] != month:
                 u = {'month': month, 'tiles': 0, 'runs': 0}
@@ -465,14 +482,14 @@ def main():
             before = rb.requests
             try:
                 rb.forecast = 0 if forecast else None
-                mosaic, got = stitch(rb, snap, z, x0, x1, y0, y1)
+                mosaic, got = stitch(rb, snap, z, x0, x1, y0, y1, skip)
                 img, valid, wet = paint_mosaic(mosaic, rb.color)
                 key_, kept = write_area(a.out, name, z, x0, x1, y0, y1, stamp, img, valid, a.frames, wet, pname + ' (zoom %d)' % z, kind=kind, folder=folder)
                 ahead = []
                 if forecast and len(steps) > 1:                                 # the nowcast steps beyond now
                     for lead in steps[1:]:
                         rb.forecast = lead * 60
-                        m2, g2 = stitch(rb, snap, z, x0, x1, y0, y1)
+                        m2, g2 = stitch(rb, snap, z, x0, x1, y0, y1, skip)
                         im2, _, _ = paint_mosaic(m2, rb.color)
                         ahead.append((lead, im2))
                     write_nowcast(d, stamp, ahead)
@@ -483,8 +500,8 @@ def main():
                 u['tiles'] += rb.requests - before; u['runs'] += 1
                 usage_save(d, u)
                 status(d, True, '', latest=stamp.strftime('%Y-%m-%dT%H:%MZ'), tiles_month=u['tiles'], budget=budget, cadence_min=cadence, tiles_run=rb.requests - before, kind=kind,
-                       nowcast_steps=[l for l, _ in ahead], note='%d of %d tiles came back' % (got, n_tiles))
-                log(folder, 'done', key_, '— %d of %d tiles, %d frames kept, %d steps ahead, wet share %.3f, %d tiles this month in this folder' % (got, n_tiles, kept, len(ahead), wet, u['tiles']))
+                       nowcast_steps=[l for l, _ in ahead], skipped_open=n_skip, note='%d of %d tiles came back' % (got, n_tiles) + (', %d left out inside the open-data radars\' reach' % n_skip if n_skip else ''))
+                log(folder, 'done', key_, '— %d of %d tiles (%d left out inside the open-data reach), %d frames kept, %d steps ahead, wet share %.3f, %d tiles this month in this folder' % (got, n_tiles, n_skip, kept, len(ahead), wet, u['tiles']))
             except Exception as e:
                 u['tiles'] += rb.requests - before; usage_save(d, u)
                 log(folder, 'failed:', e)

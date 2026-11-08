@@ -59,6 +59,9 @@ jobs:
           RAINBOW_COLOR: ${{ vars.RAINBOW_COLOR }}
       - run: python3 wms.py --out site --frames 12 --backfill 12
         continue-on-error: true
+      # the radars' reach as one outline (8 Nov, the owner: «nur den Aussenrand»): coverage-union.json at the root, from every source's coverage.json
+      - run: python3 coverage.py --out site
+        continue-on-error: true
       - uses: actions/cache/save@v4
         if: always()
         with:
