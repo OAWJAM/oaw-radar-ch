@@ -12,7 +12,9 @@ run logs «no key — skipped» and stays green. Repository *variables* (same pa
                            type           the radar mosaic painted by precipitation type — rain, snow, mixed (zoom 0–7) — kind type
                            clouds         the cloud cover from satellite (zoom 0–7) — kind clouds
                          (RAINBOW_LAYER, the older single-layer variable, still counts when RAINBOW_LAYERS is unset)
-  RAINBOW_AREAS          europe:5 (default)                                 — a comma list of <name>:<zoom>[:<x0>-<x1>:<y0>-<y1>];
+  RAINBOW_AREAS          europe:5 (default)                                 — a comma list of <name>:<zoom>[:<x0>-<x1>:<y0>-<y1>] or, since 15 Nov,
+                                                                              <name>:<zoom>:<x>/<y>+<x>/<y>+… (a tile list: one area, one layer — the tiles the
+                                                                              owner ticked on the installation's calculator; the rest of the box stays transparent);
                                                                               presets: europe:5 (48 tiles, 22.5 W – 67.5 E · 21.9 – 66.5 N — the Canaries,
                                                                               Egypt and the Levant inside), eu:5 (30 tiles, 22.5 W – 45 E · 32 – 66.5 N),
                                                                               world:3 (64 tiles); several: europe:5,world:3
@@ -72,13 +74,14 @@ def env_int(name, default):
 
 
 def areas_wanted(spec):
-    """RAINBOW_AREAS → [(name, zoom, x0, x1, y0, y1)]; a bad entry is logged and skipped."""
+    """RAINBOW_AREAS → [(name, zoom, x0, x1, y0, y1, only)]; only = None (the whole box) or the frozenset of (x, y) tiles of a tile list
+    (15 Nov: <name>:<zoom>:<x>/<y>+<x>/<y>+… — the box is their bounding box, the tiles between them are not fetched); a bad entry is logged and skipped."""
     out = []
     for item in (spec or 'europe:5').split(','):
         item = item.strip().lower()
         if not item:
             continue
-        p = item.split(':')
+        p = item.split(':'); only = None
         name = re.sub(r'[^a-z0-9]', '', p[0])[:10]
         if not name:
             log('area skipped (no name):', item); continue
@@ -94,6 +97,10 @@ def areas_wanted(spec):
                     x0, x1, y0, y1 = (int(px0 * f), int((px1 + 1) * f) - 1, int(py0 * f), int((py1 + 1) * f) - 1) if f >= 1 else (int(px0 * f), int(px1 * f), int(py0 * f), int(py1 * f))
             elif len(p) == 2:
                 z = int(p[1]); n = 2 ** z; x0, x1, y0, y1 = 0, n - 1, 0, n - 1
+            elif len(p) == 3 and '/' in p[2]:                                   # the tile list (15 Nov): e1:6:33/16+37/16+…
+                z = int(p[1]); tl = [tuple(int(v) for v in t.split('/')) for t in p[2].split('+') if t.strip()]
+                if not tl: raise ValueError('no tile')
+                only = frozenset(tl); x0, x1 = min(t[0] for t in tl), max(t[0] for t in tl); y0, y1 = min(t[1] for t in tl), max(t[1] for t in tl)
             else:
                 z = int(p[1]); xs = p[2].split('-'); ys = p[3].split('-')
                 x0, x1, y0, y1 = int(xs[0]), int(xs[-1]), int(ys[0]), int(ys[-1])
@@ -102,7 +109,9 @@ def areas_wanted(spec):
         n = 2 ** z
         if not (0 <= z <= 12) or not (0 <= x0 <= x1 < n) or not (0 <= y0 <= y1 < n):
             log('area skipped (out of range):', item); continue
-        out.append((name, z, x0, x1, y0, y1))
+        if only is not None and len(only) > 4096:
+            log('area skipped (more than 4 096 tiles listed):', item[:60]); continue
+        out.append((name, z, x0, x1, y0, y1, only))
     return out
 
 
@@ -305,11 +314,11 @@ def write_nowcast(d, stamp, steps):
                'note': 'Rainbow.ai\'s nowcast of the issue named: the picture of each step as it stood then — a forecast, not an observation'}, open(d + '/nowcast.json', 'w'), indent=1)
 
 
-def coverage_map(rb, out, name, z, x0, x1, y0, y1, snap, stamp):
+def coverage_map(rb, out, name, z, x0, x1, y0, y1, snap, stamp, only=None):
     """Where ground radar reaches, as Rainbow's radars layer sees it: the coverage mask alone, grey on white — once a day, for the owner's question
     «wo gibt es keine Radarabdeckung»."""
     rb.product('radars'); rb.color = 'dbz_u8'
-    mosaic, got = stitch(rb, snap, z, x0, x1, y0, y1)
+    mosaic, got = stitch(rb, snap, z, x0, x1, y0, y1, (lambda z_, x, y: (x, y) not in only) if only else None)   # a tile list (15 Nov): the listed tiles alone
     valid = mosaic[:, :, 3] > 0
     img = np.full(mosaic.shape[:2] + (4,), 255, dtype=np.uint8)
     img[valid] = (120, 130, 145, 255)
@@ -448,13 +457,15 @@ def main():
                 status(a.out + '/rb-' + name + ('' if (kind == 'precip' and name not in first_precip_done) else suffix), False, 'snapshot: ' + str(e)[:200])
             continue
         stamp = dt.datetime.fromtimestamp(snap, dt.timezone.utc)
-        for name, z, x0, x1, y0, y1 in areas:
+        for name, z, x0, x1, y0, y1, only in areas:
             folder = 'rb-' + name + ('' if (kind == 'precip' and name not in first_precip_done) else suffix)   # the first precip product keeps the bare rb-<area> the boards know
             d = a.out + '/' + folder
             if z > zmax:
                 log(folder, 'zoom', z, 'is beyond the product\'s', zmax, '— skipped'); status(d, False, 'zoom %d beyond the product\'s %d' % (z, zmax)); continue
-            n_tiles = (x1 - x0 + 1) * (y1 - y0 + 1)
-            n_skip = sum(1 for yy in range(y0, y1 + 1) for xx in range(x0, x1 + 1) if skip is not None and skip(z, xx, yy))   # inside the open-data reach (8 Nov)
+            listed = [(xx, yy) for yy in range(y0, y1 + 1) for xx in range(x0, x1 + 1) if only is None or (xx, yy) in only]   # the box, or the tile list alone (15 Nov)
+            skip_a = (lambda z_, x, y, _s=skip: (x, y) not in only or (_s is not None and _s(z_, x, y))) if only is not None else skip
+            n_tiles = len(listed)
+            n_skip = sum(1 for xx, yy in listed if skip is not None and skip(z, xx, yy))   # inside the open-data reach (8 Nov)
             map_due = want_map and kind == 'precip' and name not in first_precip_done and coverage_map_stale(d)
             n_need = (n_tiles - n_skip) * ((len(steps) if forecast else 1)) + (n_tiles if map_due else 0)
             u = usage_load(d)
@@ -482,19 +493,19 @@ def main():
             before = rb.requests
             try:
                 rb.forecast = 0 if forecast else None
-                mosaic, got = stitch(rb, snap, z, x0, x1, y0, y1, skip)
+                mosaic, got = stitch(rb, snap, z, x0, x1, y0, y1, skip_a)
                 img, valid, wet = paint_mosaic(mosaic, rb.color)
                 key_, kept = write_area(a.out, name, z, x0, x1, y0, y1, stamp, img, valid, a.frames, wet, pname + ' (zoom %d)' % z, kind=kind, folder=folder)
                 ahead = []
                 if forecast and len(steps) > 1:                                 # the nowcast steps beyond now
                     for lead in steps[1:]:
                         rb.forecast = lead * 60
-                        m2, g2 = stitch(rb, snap, z, x0, x1, y0, y1, skip)
+                        m2, g2 = stitch(rb, snap, z, x0, x1, y0, y1, skip_a)
                         im2, _, _ = paint_mosaic(m2, rb.color)
                         ahead.append((lead, im2))
                     write_nowcast(d, stamp, ahead)
                 if map_due:
-                    g3, share = coverage_map(rb, a.out, name, z, x0, x1, y0, y1, snap, stamp)
+                    g3, share = coverage_map(rb, a.out, name, z, x0, x1, y0, y1, snap, stamp, only)
                     log(folder, 'coverage map drawn: %d tiles, %.1f %% of the area within ground radar' % (g3, 100 * share))
                     rb.product(token, color if kind == 'precip' else (type_color if token == 'type' else ''))
                 u['tiles'] += rb.requests - before; u['runs'] += 1
