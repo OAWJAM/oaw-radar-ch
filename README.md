@@ -54,6 +54,18 @@ radar description PDFs name none — `grids.py --probe --only cz` prints what th
 histogram of the newest file and how much of the portal's own PNG of that minute is painted (a dry picture is a dry picture: on 7 Nov 09:50Z the
 field had 0.7 % of its cells above undetect, all under 5 dBZ, and the PNG 2.4 % painted).
 
+## Germany — DWD's RV composite as data, with the RADVOR steps ahead (14 Nov, the owner: «Radar de/at ja»)
+
+Since 14 Nov `grids.py` source `de` (kind `dwd`) reads the **RV composite** from DWD's open-data server — `opendata.dwd.de/weather/radar/composite/rv/`,
+one `composite_rv_YYYYMMDD_HHMM.tar` per five-minute run (and `composite_rv_LATEST.tar`), ODIM HDF5 members inside: `_000` the analysis (ACRR,
+mm over 5 min, 1 km polar-stereographic grid of 1100 × 1200 km with the projection and corners in the file's `where` group) and `_005` … `_120`
+the RADVOR steps. The analysis becomes the picture (mm/h = mm/5 min × 12), the no-data cells the coverage edge, and of the newest run the steps
+whose valid time falls on a ten-minute mark go to `de/nowcast/+<mmm>.png` + `nowcast.json` — the same shape Rainbow's steps ahead have, so the
+boards show them as the amber steps to the right of the newest picture (the installation's occ-radar.php reads `nowcast.json` for any source
+`sources.json` flags with `nowcast: true`, from v0.37). Licence dl-de/by-2-0, «Source: DWD». The WMS picture of maps.dwd.de (`wms.py` source `de`)
+is retired — the same folder, the data instead of a rendered picture. `grids.py --probe --only de` names the runs, the LATEST tar's members and a
+member's ODIM attributes. Austria stays with GeoSphere's INCA analysis: the raw radar composite needs an account (see the grids.py header).
+
 ## Italy — Radar-DPC, the Protezione Civile's national mosaic (7 Nov, the owner: «Italien go»)
 
 `grids.py` source `it` (kind `dpc`): the platform `radar-api.protezionecivile.it` as its documentation (dpc-radar.readthedocs.io) describes it — `GET /findLastProductByType?type=SRI` names the newest product (`{total, lastProducts:[{productType, time, period}]}`, the time in epoch milliseconds, products every 5 minutes), `POST /downloadProduct` with `{productType, productDate}` answers a pre-signed S3 link to the GeoTIFF, and every call carries the platform's own `origin` header (`https://radar.protezionecivile.it` — the docs say it is required; the probe saw the API answer without it too). The product is **SRI**, the surface rain intensity in mm/h (0.0 where a radar sees dry ground, -9999 beyond the reach — the reach's edge comes from that); **VMI** (maximum reflectivity in dBZ, Marshall-Palmer) stands in when SRI is missing, without a reach (VMI masks everything under 10 dBZ as -9999). The grid: 1200 × 1400 cells of 1 km from (-600000, 650000) in a custom Transverse Mercator (lat_0 42, lon_0 12.5, WGS 84) — the file's GeoKeys name only the datum, so the reader sets the projection itself; onto 0.01° lon/lat over 6–19 E · 35.5–47.5 N. **Licence**: the documentation names «Creative Commons Attribuzione – Condividi allo stesso modo» (CC BY-SA) with «Radar-DPC» to be cited as the source; the pictures of this site carry that line.

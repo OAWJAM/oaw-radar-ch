@@ -17,7 +17,8 @@ UA = 'oaw-radar-ch converter (github actions; contact via the repository)'
 SOURCES = [
     {'id': 'de', 'name': 'Germany', 'source': 'DWD', 'licence': 'dl-de/by-2-0, Source: DWD', 'product': 'RADOLAN',
      'url': 'https://maps.dwd.de/geoserver/dwd/wms', 'layers': ['Radar_wn-analysis_1x1km_ger', 'dwd:Niederschlagsradar', 'dwd:RX-Produkt'],
-     'bbox': (3.5, 47.0, 16.5, 55.5), 'step_min': 5, 'clear': True},
+     'bbox': (3.5, 47.0, 16.5, 55.5), 'step_min': 5, 'clear': True,
+     'retired': 'the RV composite from DWD\'s open-data server carries Germany since 14 Nov (grids.py source de: the data and the RADVOR steps ahead, not the WMS picture)'},
     {'id': 'fi', 'name': 'Finland', 'source': 'FMI', 'licence': 'CC BY 4.0, Source: FMI', 'product': 'RR',
      'url': 'https://openwms.fmi.fi/geoserver/Radar/wms', 'layers': ['radar_finland_cappi_rate', 'suomi_rr_eureffin', 'radar_finland_cappi_dbzh'],
      'bbox': (19.0, 59.0, 32.0, 70.5), 'step_min': 5, 'retired': 'the Nordic composite (no) carries the Finnish radars since 7 Nov (the owner, 6 Nov 23:18: «20. ersetzen»)'},
@@ -202,7 +203,7 @@ def write_sources(out, done):
             st = json.load(open(out + '/' + d + '/status.json'))
         except Exception:
             pass
-        lst.append({'id': d, 'name': NAMES.get(d) or j.get('name') or d.upper(), 'path': d, 'kind': j.get('kind', 'precip'), 'licence': j.get('licence', ''), 'source': j.get('source', ''), 'product': j.get('product', ''), 'ok': bool(st.get('ok', d in done)), 'updated': j.get('updated', '')})   # kind (7 Nov): precip is drawn as radar; type and clouds are Rainbow's other products, listed for the boards to take up later
+        lst.append({'id': d, 'name': NAMES.get(d) or j.get('name') or d.upper(), 'path': d, 'kind': j.get('kind', 'precip'), 'licence': j.get('licence', ''), 'source': j.get('source', ''), 'product': j.get('product', ''), 'nowcast': os.path.isfile(out + '/' + d + '/nowcast.json'), 'ok': bool(st.get('ok', d in done)), 'updated': j.get('updated', '')})   # kind (7 Nov): precip is drawn as radar; type and clouds are Rainbow's other products, listed for the boards to take up later
     if os.path.exists(out + '/frames.json'):
         lst.append(ROOT_SOURCE)
     json.dump({'updated': dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), 'sources': lst}, open(out + '/sources.json', 'w'), indent=1)

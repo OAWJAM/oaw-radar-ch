@@ -47,6 +47,9 @@ SOURCES = [
     {'id': 'it', 'kind': 'dpc', 'name': 'Italy', 'source': 'Radar-DPC', 'licence': 'CC BY-SA, Source: Radar-DPC (Dipartimento della Protezione Civile)', 'product': 'National radar mosaic (SRI, rain intensity; VMI when SRI is missing)',
      'bbox': (6.0, 35.5, 19.0, 47.5), 'step_min': 5, 'step': 0.01,
      'note': 'Radar-DPC, the national mosaic of the Dipartimento della Protezione Civile (radar-api.protezionecivile.it, docs dpc-radar.readthedocs.io): the newest product as a GeoTIFF on a 1 km Transverse Mercator grid, asked with the platform\'s own origin header; the docs name CC BY-SA with «Radar-DPC» as the source (7 Nov, the owner: «Italien go»)'},
+    {'id': 'de', 'kind': 'dwd', 'name': 'Germany', 'source': 'DWD', 'licence': 'dl-de/by-2-0, Source: DWD', 'product': 'RV composite (5-min precipitation, RADVOR steps ahead)',
+     'bbox': (1.4, 45.6, 18.8, 55.9), 'step_min': 5, 'step': 0.01,
+     'note': 'DWD\'s RV composite from the open-data server (opendata.dwd.de/weather/radar/composite/rv, one tar per run with ODIM HDF5 members: the analysis and the RADVOR steps +5 \u2026 +120 min, 1 km polar-stereographic, every 5 min) \u2014 the data, not the WMS picture (14 Nov, the owner: \u00abRadar de/at ja\u00bb); the steps that fall on a ten-minute mark go to nowcast/ as the boards\u2019 steps ahead'},
     {'id': 'cz', 'kind': 'chmi', 'name': 'Czechia', 'source': '\u010cHM\u00da', 'licence': 'CC BY 4.0 (the \u010cHM\u00da open-data page carries the CC BY 4.0 mark; the data server itself names none), Source: \u010cHM\u00da', 'product': 'MAX_Z composite',
      'bbox': (11.2, 48.0, 19.7, 51.5), 'step_min': 5, 'step': 0.01,
      'note': '\u010cHM\u00da\'s radar composite (maximum reflectivity, 1 km Mercator, every 5 min) from the open-data portal opendata.chmi.cz — ODIM HDF5, no key (7 Nov, the owner: «CZ ja»)'},
@@ -59,6 +62,7 @@ AEMET = 'https://opendata.aemet.es/opendata/api/red/radar/nacional'
 THREDDS = 'https://thredds.met.no/thredds'
 CHMI = 'https://opendata.chmi.cz/meteorology/weather/radar/composite/maxz/hdf5/'
 CHMI_ROOT = 'https://opendata.chmi.cz/'
+DWD_RV = 'https://opendata.dwd.de/weather/radar/composite/rv/'          # DWD's RV runs: composite_rv_YYYYMMDD_HHMM.tar (+ composite_rv_LATEST.tar), ODIM HDF5 inside (14 Nov)
 DPC_API = 'https://radar-api.protezionecivile.it'                   # Radar-DPC (dpc-radar.readthedocs.io): findLastProductByType, downloadProduct (a pre-signed S3 link), the origin header on every call
 DPC_ORIGIN = 'https://radar.protezionecivile.it'                   # the platform's own page: «è necessario includere il parametro origin in tutte le richieste» (7 Nov, the owner: «Italien go»)
 DPC_TERMS = 'https://dpc-radar.readthedocs.io/it/latest/'
@@ -410,6 +414,133 @@ def run_chmi(src, a):
     if not got:
         raise RuntimeError('no picture converted')
     return got
+
+
+def dwd_runs(n=12):
+    """The newest n RV runs of DWD's open-data folder, oldest first: [(stamp, url)] — the folder's index page names composite_rv_YYYYMMDD_HHMM.tar
+    (the run's analysis time, UTC) beside composite_rv_LATEST.tar."""
+    r = get(DWD_RV, headers={'User-Agent': UA, 'Accept': 'text/html, */*'})
+    found = {}
+    for m in re.finditer(r'(composite_rv_(\d{8})_(\d{4})\.tar)(?!\.)', r.text):
+        try:
+            t = dt.datetime.strptime(m.group(2) + m.group(3), '%Y%m%d%H%M').replace(tzinfo=dt.timezone.utc)
+        except ValueError:
+            continue
+        found[t] = DWD_RV + m.group(1)
+    stamps = sorted(found)
+    return [(t, found[t]) for t in stamps[-n:]]
+
+
+def dwd_members(blob):
+    """The members of an RV run's tar as {lead_min: bytes} — composite_rv_YYYYMMDD_HHMM_<lll>-hd5, 000 the analysis, the rest the RADVOR steps."""
+    import tarfile
+    out = {}
+    with tarfile.open(fileobj=io.BytesIO(blob), mode='r:*') as tar:
+        for m in tar.getmembers():
+            mm = re.search(r'_(\d{3})-hd5$', m.name)
+            if not mm or not m.isfile():
+                continue
+            f = tar.extractfile(m)
+            if f is not None:
+                out[int(mm.group(1))] = f.read()
+    return out
+
+
+def dwd_field(blob, src, step):
+    """One ODIM member → the mm/h field on the source's plate-carrée grid (ACRR over 5 min scaled to the hour), its size and the wet share."""
+    rate, grid, scale, quantity = convert.read_odim(blob)
+    rate = odim_rate(rate, quantity, 5)
+    field, _, size = convert.reproject(rate, grid, src['bbox'], step)
+    field[np.isfinite(field) & (field < 0.1)] = 0.0
+    wet = float(np.nanmean(field >= 0.1)) if np.isfinite(field).any() else 0.0
+    return field, size, wet, quantity
+
+
+def write_nowcast_steps(d, stamp, steps, source, note):
+    """The steps beyond now of one run (the same shape Rainbow's nowcast has, 7 Nov): nowcast/+<mmm>.png and nowcast.json; the previous run's files go."""
+    nd = d + '/nowcast'
+    os.makedirs(nd, exist_ok=True)
+    keep = set()
+    for lead, img in steps:
+        f = '+%03d.png' % lead
+        img.save(nd + '/' + f, optimize=True); keep.add(f)
+    for f in os.listdir(nd):
+        if f.endswith('.png') and f not in keep:
+            os.remove(nd + '/' + f)
+    json.dump({'issued': stamp.strftime('%Y-%m-%dT%H:%M:%SZ'), 'source': source,
+               'frames': [{'lead_min': lead, 'valid': (stamp + dt.timedelta(minutes=lead)).strftime('%Y-%m-%dT%H:%M:%SZ'), 'src': 'nowcast/+%03d.png' % lead} for lead, _ in steps],
+               'note': note}, open(d + '/nowcast.json', 'w'), indent=1)
+
+
+def run_dwd(src, a):
+    """The German source (14 Nov): the newest RV runs not yet a frame, oldest first — the analysis member as the picture, the RADVOR steps of the
+    newest run that fall on a ten-minute mark as the steps ahead (nowcast/), the reach from the analysis' no-data."""
+    d = a.out + '/' + src['id']
+    step = src.get('step', a.step)
+    if a.file:
+        m = re.search(r'(\d{8})_(\d{4})', os.path.basename(a.file))
+        stamp = dt.datetime.strptime(m.group(1) + m.group(2), '%Y%m%d%H%M').replace(tzinfo=dt.timezone.utc) if m else dt.datetime.now(dt.timezone.utc).replace(second=0, microsecond=0)
+        items = [(stamp, a.file)]
+    else:
+        items = dwd_runs(max(1, a.backfill))
+    if not items:
+        raise RuntimeError('no run named on the folder\'s index page')
+    todo = [(t, h) for t, h in items if not os.path.exists(d + '/frames/' + t.strftime('%Y%m%d%H%M') + '.png')]
+    if not todo:
+        log(src['id'], 'already there', items[-1][0].strftime('%Y%m%d%H%M')); return 0
+    got = 0; newest = items[-1][0]
+    for stamp, href in todo:
+        try:
+            blob = open(href, 'rb').read() if a.file else get(href).content
+            members = dwd_members(blob)
+            if 0 not in members:
+                raise RuntimeError('no analysis member (_000) in the tar: ' + ', '.join(str(k) for k in sorted(members))[:80])
+            field, size, wet, quantity = dwd_field(members[0], src, step)
+            img = convert.paint(field)
+            if convert.coverage_stale(d, stamp):
+                convert.write_coverage(d, np.isfinite(field), src['bbox'], step, src['source'])
+            ahead = []
+            if stamp == newest:                                                                    # the steps ahead of the newest run alone: every lead whose valid time sits on a ten-minute mark
+                for lead in sorted(k for k in members if k > 0):
+                    if (stamp + dt.timedelta(minutes=lead)).minute % 10 != 0 or lead > 240:
+                        continue
+                    try:
+                        f2, _, _, _ = dwd_field(members[lead], src, step)
+                        ahead.append((lead, convert.paint(f2)))
+                    except Exception as e:
+                        log('  step +%d failed:' % lead, e)
+                if ahead:
+                    write_nowcast_steps(d, stamp, ahead, src['source'], 'DWD’s RADVOR steps of the run named (the RV composite’s forecast members): the picture of each step as it stood then — a forecast, not an observation')
+            k, n = write_frames(a.out, src, stamp, img, a.frames, {'wet_share': round(wet, 4), 'width': size[0], 'height': size[1], 'step_deg': step, 'url': href, 'note': src.get('note', ''), 'quantity': quantity,
+                                                                 'members': len(members), 'nowcast_steps': [l for l, _ in ahead]})
+            log('  done', k, size, 'wet share', round(wet, 4), 'frames', n, 'members', len(members), 'steps ahead', [l for l, _ in ahead]); got += 1
+        except Exception as e:
+            log('  ', stamp.strftime('%H:%MZ'), 'failed:', e)
+    if not got:
+        raise RuntimeError('no picture converted')
+    return got
+
+
+def probe_dwd():
+    """DWD's RV folder: the newest runs named, the LATEST tar's members, one member's ODIM attributes and the field's values."""
+    try:
+        runs = dwd_runs(6)
+        log('rv runs named:', [(t.strftime('%Y-%m-%d %H:%MZ'), u.rsplit('/', 1)[1]) for t, u in runs])
+    except Exception as e:
+        log('the folder index not read:', e); runs = []
+    try:
+        r = get(DWD_RV + 'composite_rv_LATEST.tar')
+        log('LATEST.tar', len(r.content), 'bytes, content-type', r.headers.get('content-type'), 'last-modified', r.headers.get('last-modified'))
+        members = dwd_members(r.content)
+        log('members (lead min):', sorted(members), 'sizes', {k: len(v) for k, v in sorted(members.items())[:4]})
+        for lead in (0, 5, 60):
+            if lead in members:
+                rate, grid, scale, quantity = convert.read_odim(members[lead])
+                r2 = odim_rate(rate, quantity, 5)
+                log('  +%03d' % lead, 'quantity', quantity, 'scale', scale, 'finite share', round(float(np.isfinite(r2).mean()), 3), 'wet share', round(float(np.nanmean(r2 >= 0.1)), 4), 'max mm/h', round(float(np.nanmax(r2)), 1))
+    except Exception as e:
+        log('LATEST.tar not read:', e)
+    return 0
 
 
 def dpc_headers(extra=None):
@@ -1283,7 +1414,7 @@ def main():
     a = ap.parse_args()
     only = [x for x in a.only.split(',') if x]
     if a.probe:
-        return probe() if (not only or 'se' in only) else (probe_austria() if 'at' in only else (probe_thredds() if 'thredds' in only else (probe_dmi() if 'dmi' in only else (probe_chmi() if 'cz' in only else (probe_dpc() if 'it' in only else probe_norway())))))
+        return probe() if (not only or 'se' in only) else (probe_austria() if 'at' in only else (probe_thredds() if 'thredds' in only else (probe_dmi() if 'dmi' in only else (probe_chmi() if 'cz' in only else (probe_dwd() if 'de' in only else (probe_dpc() if 'it' in only else probe_norway()))))))
     os.makedirs(a.out, exist_ok=True)
     for src in SOURCES:
         if only and src['id'] not in only:
@@ -1293,9 +1424,9 @@ def main():
         if src.get('await_probe') and src['id'] not in only:
             log(src['id'], 'waits for its probe —', src['await_probe']); continue
         d = a.out + '/' + src['id']; os.makedirs(d, exist_ok=True)
-        if src.get('kind') in ('geosphere', 'nordic', 'dmi', 'knmi', 'meteofrance', 'chmi', 'dpc', 'aemet', 'imo'):
+        if src.get('kind') in ('geosphere', 'nordic', 'dmi', 'knmi', 'meteofrance', 'chmi', 'dpc', 'aemet', 'imo', 'dwd'):
             try:
-                {'geosphere': run_geosphere, 'nordic': run_nordic, 'dmi': run_dmi, 'knmi': run_knmi, 'meteofrance': run_meteofrance, 'chmi': run_chmi, 'dpc': run_dpc, 'aemet': run_aemet, 'imo': run_imo}[src['kind']](src, a)
+                {'geosphere': run_geosphere, 'nordic': run_nordic, 'dmi': run_dmi, 'knmi': run_knmi, 'meteofrance': run_meteofrance, 'chmi': run_chmi, 'dpc': run_dpc, 'aemet': run_aemet, 'imo': run_imo, 'dwd': run_dwd}[src['kind']](src, a)
             except Exception as e:
                 log(src['id'], 'failed:', e)
                 json.dump({'ok': False, 'error': str(e)[:300], 'at': dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}, open(d + '/status.json', 'w'), indent=1)
