@@ -416,6 +416,30 @@ def run_chmi(src, a):
     return got
 
 
+def purge_other_frames(d, bbox, step):
+    """Frames of another size than this source's grid — left by a source that drew the same folder before (the WMS picture until 14 Nov) — are removed,
+    so the list never stretches an old picture over the new bounding box."""
+    W, S, E, N = bbox
+    want = (int(round((E - W) / step)), int(round((N - S) / step)))
+    fd = d + '/frames'
+    if not os.path.isdir(fd):
+        return 0
+    n = 0
+    for f in os.listdir(fd):
+        if not re.match(r'^\d{12}\.png$', f):
+            continue
+        try:
+            with Image.open(fd + '/' + f) as im:
+                size = im.size
+        except Exception:
+            size = None
+        if size != want:
+            os.remove(fd + '/' + f); n += 1
+    if n:
+        log('  removed', n, 'frame(s) of another size (a former source\'s)', 'wanted', want)
+    return n
+
+
 def dwd_runs(n=12):
     """The newest n RV runs of DWD's open-data folder, oldest first: [(stamp, url)] — the folder's index page names composite_rv_YYYYMMDD_HHMM.tar
     (the run's analysis time, UTC) beside composite_rv_LATEST.tar."""
@@ -485,6 +509,7 @@ def run_dwd(src, a):
         items = dwd_runs(max(1, a.backfill))
     if not items:
         raise RuntimeError('no run named on the folder\'s index page')
+    purge_other_frames(d, src['bbox'], step)                                                         # the WMS picture's frames of the hour before the switch (another size): gone, not stretched
     todo = [(t, h) for t, h in items if not os.path.exists(d + '/frames/' + t.strftime('%Y%m%d%H%M') + '.png')]
     if not todo:
         log(src['id'], 'already there', items[-1][0].strftime('%Y%m%d%H%M')); return 0
