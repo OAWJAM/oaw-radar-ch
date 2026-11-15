@@ -1612,6 +1612,72 @@ def probe_aemet():
     return 0
 
 
+def rmi_times(n=12):
+    """The newest n times of RMI's composite layer from the WMS capabilities (a start/end/PT5M range), oldest first."""
+    r = get(RMI_WMS, params={'service': 'WMS', 'version': '1.3.0', 'request': 'GetCapabilities'}, headers={'Accept': 'text/xml, */*'})
+    m = re.search(r'<Name>(?:radar:)?' + RMI_LAYER + r'</Name>.*?<Dimension name="time"[^>]*>([^<]+)</Dimension>', r.text, re.S)   # the workspace prefix radar: on /geoserver/wms
+    if not m:
+        raise RuntimeError('the capabilities name no time dimension for ' + RMI_LAYER)
+    spec = m.group(1).strip()
+    if '/' in spec:
+        a_, b_, per = spec.split('/')[:3]
+        t0, t1 = parse_time(a_), parse_time(b_)
+        mins = int(re.match(r'PT(\d+)M', per).group(1)) if re.match(r'PT(\d+)M', per) else 5
+        out = []; t = t1
+        while t >= t0 and len(out) < n:
+            out.append(t); t -= dt.timedelta(minutes=mins)
+        return sorted(out)
+    ts = sorted(parse_time(x) for x in spec.split(',') if x.strip())
+    return ts[-n:]
+
+
+def rmi_field(blob):
+    """The GetMap picture as a rain field: the legend's classes → mm/h, transparent → dry, grey → beyond the reach (NaN)."""
+    im = Image.open(io.BytesIO(blob)).convert('RGBA'); a = np.array(im).astype(np.int16); H, W = a.shape[:2]
+    rgb = a[..., :3]; al = a[..., 3]
+    field = np.zeros((H, W), dtype=np.float32)
+    nod = (rgb[..., 0] == RMI_NODATA[0]) & (rgb[..., 1] == RMI_NODATA[1]) & (rgb[..., 2] == RMI_NODATA[2]) & (al > 0)
+    field[nod] = np.nan
+    cand = (al > 0) & ~nod
+    if cand.any():
+        cols = np.array([c for c, v in RMI_CLASSES], dtype=np.int32); vals = np.array([v for c, v in RMI_CLASSES], dtype=np.float32)
+        px = rgb[cand].astype(np.int32); dist = ((px[:, None, :] - cols[None, :, :]) ** 2).sum(axis=2); near = dist.argmin(axis=1)
+        good = dist[np.arange(len(px)), near] < 40 ** 2
+        yy, xx = np.where(cand); field[yy[good], xx[good]] = vals[near[good]]
+    return field, (W, H)
+
+
+def run_rmi(src, a):
+    """Belgium (15 Nov): every 5-min time the capabilities name that is not yet a frame — one GetMap each in plain latitude/longitude at the
+    source's step, the classes read from the colours, the reach from the grey."""
+    d = a.out + '/' + src['id']; step = src.get('step', a.step)
+    times = rmi_times(max(1, a.backfill))
+    if not times:
+        raise RuntimeError('no time named by the capabilities')
+    todo = [t for t in times if not os.path.exists(d + '/frames/' + t.strftime('%Y%m%d%H%M') + '.png')]
+    if not todo:
+        log(src['id'], 'already there', times[-1].strftime('%Y%m%d%H%M')); return 0
+    W, S, E, N = src['bbox']; w = int(round((E - W) / step)); h = int(round((N - S) / step)); got = 0
+    for stamp in todo:
+        try:
+            r = get(RMI_WMS, params={'service': 'WMS', 'version': '1.1.1', 'request': 'GetMap', 'layers': RMI_LAYER, 'styles': '', 'srs': 'EPSG:4326', 'bbox': '%s,%s,%s,%s' % (W, S, E, N),
+                                     'width': w, 'height': h, 'format': 'image/png', 'transparent': 'true', 'time': stamp.strftime('%Y-%m-%dT%H:%M:%S.000Z')}, headers={'Accept': 'image/png, */*'})
+            if not r.headers.get('content-type', '').startswith('image/'):
+                raise RuntimeError('no picture: %s %s' % (r.status_code, re.sub(r'\s+', ' ', r.text[:160])))
+            field, size = rmi_field(r.content)
+            img = convert.paint(field)
+            wet = float(np.nanmean(field >= 0.1)) if np.isfinite(field).any() else 0.0
+            if convert.coverage_stale(d, stamp):
+                convert.write_coverage(d, np.isfinite(field), src['bbox'], step, src['source'])
+            k, n = write_frames(a.out, src, stamp, img, a.frames, {'wet_share': round(wet, 4), 'width': size[0], 'height': size[1], 'step_deg': step, 'url': RMI_WMS, 'note': src.get('note', ''), 'cadence_min': 5})
+            log('  done', k, size, 'wet share', round(wet, 4), 'frames', n, 'reach share', round(float(np.isfinite(field).mean()), 3)); got += 1
+        except Exception as e:
+            log('  ', stamp.strftime('%H:%MZ'), 'failed:', e)
+    if not got:
+        raise RuntimeError('no picture converted')
+    return got
+
+
 def probe_opera():
     """The Open Radar Data API: the newest composites, one read, the reach shares at a few places."""
     items = opera_items(4)
