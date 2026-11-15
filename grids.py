@@ -53,13 +53,22 @@ SOURCES = [
     {'id': 'cz', 'kind': 'chmi', 'name': 'Czechia', 'source': '\u010cHM\u00da', 'licence': 'CC BY 4.0 (the \u010cHM\u00da open-data page carries the CC BY 4.0 mark; the data server itself names none), Source: \u010cHM\u00da', 'product': 'MAX_Z composite',
      'bbox': (11.2, 48.0, 19.7, 51.5), 'step_min': 5, 'step': 0.01,
      'note': '\u010cHM\u00da\'s radar composite (maximum reflectivity, 1 km Mercator, every 5 min) from the open-data portal opendata.chmi.cz — ODIM HDF5, no key (7 Nov, the owner: «CZ ja»)'},
+    {'id': 'be', 'kind': 'rmi', 'name': 'Belgium', 'source': 'RMI', 'licence': 'CC BY 4.0, Source: RMI (Royal Meteorological Institute of Belgium)', 'product': 'Belgian rainfall composite (5 min)',
+     'bbox': (-1.0, 47.4, 9.7, 53.8), 'step_min': 5, 'step': 0.01,
+     'note': 'RMI\'s Belgian rainfall composite from its open-data GeoServer (opendata.meteo.be/geoserver/wms, layer belgian_rainfall_composite, the last 13 hours every 5 min): a GetMap in plain '
+             'latitude/longitude, the picture\'s six rain classes (mm/h, from the server\'s own legend) painted at each class\'s geometric mean; grey is beyond the reach. CC BY 4.0 (the catalogue record '
+             'RMI_DATASET_BELGIAN_COMPOSITE), no key (15 Nov, the owner: «BE / IE bauen»). The WCS and the /service path refuse a GetMap (403) — only /geoserver/wms answers.'},
     {'id': 'eu', 'kind': 'opera', 'name': 'Europe (OPERA composite)', 'source': 'EUMETNET OPERA', 'licence': 'CC BY 4.0, Source: EUMETNET OPERA', 'product': 'OPERA NIMBUS instantaneous rain rate composite (15 min, 2 km)',
      'bbox': (-25.0, 31.5, 45.0, 72.0), 'step_min': 15, 'step': 0.02, 'backup': True,
      'note': 'EUMETNET\'s OPERA composite from the Open Radar Data API on MeteoGate (open since 20 May 2026 under the EU high-value-datasets rules): the rain rate every 15 min on a 2 km LAEA grid, '
              'ODIM HDF5, CC BY 4.0, no key — the radars of ~30 services (the UK, Ireland, Iberia, Poland, the Balkans, the Baltics among them; not Greece, Turkey, Cyprus). The owner (15 Nov 02:51): '
              '«alle Länder einbinden, die über OPERA liefern — als Backup»: it lies under the national sources and is cut where one of them is fresh (OPERA_CUT=0 keeps it whole), so no echo is drawn twice.'},
 ]
-ORD = 'https://api.meteogate.eu/eu-eumetnet-weather-radar/collections/observations/locations/0-20010-0-OPERA'   # the OPERA composite's time series: the 24 h of download links (ODIM, 15 min)
+ORD = 'https://api.meteogate.eu/eu-eumetnet-weather-radar/collections/observations/locations/0-20010-0-OPERA'
+RMI_WMS = 'https://opendata.meteo.be/geoserver/wms'
+RMI_LAYER = 'belgian_rainfall_composite'
+RMI_CLASSES = [((82, 255, 241), 1.04), ((77, 177, 220), 4.2), ((68, 162, 200), 17.3), ((60, 116, 179), 38.7), ((53, 69, 159), 158.0), ((46, 23, 138), 500.0)]   # the legend of 15 Nov: 0.6–1.8 · 1.8–10 · 10–30 · 30–50 · 50–500 · 500+ mm/h → each class's geometric mean (the last two land in the top bins)
+RMI_NODATA = (210, 210, 210)                                                                        # «Out of range» — beyond the composite's reach   # the OPERA composite's time series: the 24 h of download links (ODIM, 15 min)
 DMI = 'https://opendataapi.dmi.dk/v1/radardata'
 KNMI = 'https://api.dataplatform.knmi.nl/open-data/v1/datasets/radar_reflectivity_composites/versions/2.0/files'
 MF_TOKEN = 'https://portail-api.meteofrance.fr/token'
@@ -1554,54 +1563,52 @@ def aemet_call(key, path, what='datos'):
 
 
 def probe_aemet():
-    """AEMET's georeferenced radar rasters (the HVD endpoints raster/nacional, raster/regional, raster_int/{tipo}/{variable}) with the repository
-    secret: what the gateway answers, what the `datos` link holds (a TIFF? a zip? its frame, bands, GDAL metadata — the ESCALA colours), the
-    metadatos text. The key is used, never printed."""
+    """AEMET's georeferenced radar rasters (the HVD endpoints raster/nacional and raster/regional) with the repository secret: the gateway's
+    answer, the tar.gz behind `datos` (its members, one GeoTIFF's frame, bands, GDAL metadata — the ESCALA colours), the metadatos text.
+    Two calls twenty seconds apart (the gateway's per-minute limit, 15 Nov 02:02Z: «Se ha alcanzado uno de los límites de uso»). The key is used, never printed."""
     key = os.environ.get('AEMET_API_KEY', '').strip()
     if not key:
         log('es: no AEMET_API_KEY in the environment — nothing to probe'); return 0
-    import tifffile, zipfile
-    for path in ('red/radar/raster/nacional', 'red/radar/raster/regional', 'red/radar/raster_int/nacional/reflectividad', 'red/radar/raster_int/regional/reflectividad',
-                 'red/radar/raster_int/nacional/REFLECTIVIDAD', 'red/radar/raster_int/ppi/reflectividad', 'red/radar/raster_int/nacional/zppi', 'red/radar/nacional', 'red/radar/regional/ca'):
+    import tifffile, tarfile
+    for n_, path in enumerate(('red/radar/raster/nacional', 'red/radar/raster/regional')):
+        if n_:
+            time.sleep(25)
         try:
             code, j, head = aemet_call(key, path)
         except Exception as e:
             log('es probe', path, 'failed:', e); continue
-        log('es probe', path, '→', code, head if not j else {k: (v if k != 'datos' and k != 'metadatos' else v[:90]) for k, v in j.items()})
+        log('es probe', path, '→', code, head if not j else {k: (v if k not in ('datos', 'metadatos') else v[:60]) for k, v in j.items()})
         if not j or not j.get('datos'):
-            time.sleep(3); continue
+            continue
+        time.sleep(8)
         try:
-            r2 = requests.get(j['datos'], headers={'User-Agent': UA}, timeout=120)
+            r2 = requests.get(j['datos'], headers={'User-Agent': UA}, timeout=180)
             ct = r2.headers.get('content-type'); blob = r2.content
-            log('  datos', r2.status_code, ct, len(blob), 'bytes, last-modified', r2.headers.get('last-modified'), 'disposition', r2.headers.get('content-disposition'), 'head', blob[:16])
-            if blob[:4] in (b'II*\x00', b'MM\x00*'):
-                with tifffile.TiffFile(io.BytesIO(blob)) as tf:
-                    for pi, page in enumerate(tf.pages[:4]):
-                        tags = {t.name: t.value for t in page.tags.values()}
-                        arr = page.asarray()
-                        log('  tiff page', pi, 'shape', arr.shape, 'dtype', arr.dtype, 'photometric', page.photometric, 'tie', tags.get('ModelTiepointTag'), 'scale', tags.get('ModelPixelScaleTag'),
-                            'geokeys', list(tags.get('GeoKeyDirectoryTag') or [])[:24], 'nodata', tags.get('GDAL_NODATA'))
-                        gm = tags.get('GDAL_METADATA')
-                        if gm: log('  gdal metadata', str(gm)[:1500])
-                        if arr.ndim == 3:
-                            flat = arr.reshape(-1, arr.shape[2]); u, c = np.unique(flat, axis=0, return_counts=True); order = np.argsort(-c)
-                            log('  colours', len(u), [(tuple(int(x) for x in u[k]), int(c[k])) for k in order[:24]])
-                        else:
-                            u, c = np.unique(arr, return_counts=True); log('  values', len(u), [(int(u[k]) if np.issubdtype(arr.dtype, np.integer) else float(u[k]), int(c[k])) for k in np.argsort(-c)[:24]])
-                open('/tmp/es_probe_' + path.replace('/', '_') + '.tif', 'wb').write(blob)
-            elif blob[:2] == b'PK':
-                with zipfile.ZipFile(io.BytesIO(blob)) as z:
-                    log('  zip members', [(i.filename, i.file_size) for i in z.infolist()[:40]])
+            log('  datos', r2.status_code, ct, len(blob), 'bytes, last-modified', r2.headers.get('last-modified'), 'disposition', r2.headers.get('content-disposition'), 'head', blob[:8])
+            if blob[:2] == b'\x1f\x8b' or 'gzip' in str(ct) or 'octet' in str(ct):
+                with tarfile.open(fileobj=io.BytesIO(blob), mode='r:*') as tf:
+                    members = [m for m in tf.getmembers() if m.isfile()]
+                    log('  tar members', len(members), [(m.name, m.size) for m in members[:60]])
+                    shown = 0
+                    for m in members:
+                        if not m.name.lower().endswith(('.tif', '.tiff')) or shown >= 3:
+                            continue
+                        data = tf.extractfile(m).read(); shown += 1
+                        with tifffile.TiffFile(io.BytesIO(data)) as t:
+                            page = t.pages[0]; tags = {tg.name: tg.value for tg in page.tags.values()}; arr = page.asarray()
+                            log('  tif', m.name, 'shape', arr.shape, 'dtype', arr.dtype, 'photometric', page.photometric, 'tie', tags.get('ModelTiepointTag'), 'scale', tags.get('ModelPixelScaleTag'),
+                                'geokeys', list(tags.get('GeoKeyDirectoryTag') or [])[:20], 'nodata', tags.get('GDAL_NODATA'), 'extrasamples', tags.get('ExtraSamples'))
+                            gm = tags.get('GDAL_METADATA')
+                            if gm: log('  gdal metadata', str(gm)[:2500])
+                            if arr.ndim == 3:
+                                flat = arr.reshape(-1, arr.shape[2]); u, c = np.unique(flat, axis=0, return_counts=True); order = np.argsort(-c)
+                                log('  colours', len(u), [(tuple(int(x) for x in u[k]), int(c[k])) for k in order[:30]])
+                            else:
+                                u, c = np.unique(arr, return_counts=True); log('  values', len(u), [(float(u[k]), int(c[k])) for k in np.argsort(-c)[:30]])
             else:
                 log('  body head', re.sub(r'\s+', ' ', blob[:400].decode('utf-8', 'replace')))
         except Exception as e:
             log('  datos failed:', e)
-        if j.get('metadatos'):
-            try:
-                r3 = requests.get(j['metadatos'], headers={'User-Agent': UA}, timeout=60); log('  metadatos', r3.status_code, re.sub(r'\s+', ' ', r3.text[:1500]))
-            except Exception as e:
-                log('  metadatos failed:', e)
-        time.sleep(3)
     return 0
 
 
@@ -1640,9 +1647,9 @@ def main():
         if src.get('await_probe') and src['id'] not in only:
             log(src['id'], 'waits for its probe —', src['await_probe']); continue
         d = a.out + '/' + src['id']; os.makedirs(d, exist_ok=True)
-        if src.get('kind') in ('geosphere', 'nordic', 'dmi', 'knmi', 'meteofrance', 'chmi', 'dpc', 'aemet', 'imo', 'dwd', 'opera'):
+        if src.get('kind') in ('geosphere', 'nordic', 'dmi', 'knmi', 'meteofrance', 'chmi', 'dpc', 'aemet', 'imo', 'dwd', 'opera', 'rmi'):
             try:
-                {'geosphere': run_geosphere, 'nordic': run_nordic, 'dmi': run_dmi, 'knmi': run_knmi, 'meteofrance': run_meteofrance, 'chmi': run_chmi, 'dpc': run_dpc, 'aemet': run_aemet, 'imo': run_imo, 'dwd': run_dwd, 'opera': run_opera}[src['kind']](src, a)
+                {'geosphere': run_geosphere, 'nordic': run_nordic, 'dmi': run_dmi, 'knmi': run_knmi, 'meteofrance': run_meteofrance, 'chmi': run_chmi, 'dpc': run_dpc, 'aemet': run_aemet, 'imo': run_imo, 'dwd': run_dwd, 'opera': run_opera, 'rmi': run_rmi}[src['kind']](src, a)
             except Exception as e:
                 log(src['id'], 'failed:', e)
                 json.dump({'ok': False, 'error': str(e)[:300], 'at': dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}, open(d + '/status.json', 'w'), indent=1)
