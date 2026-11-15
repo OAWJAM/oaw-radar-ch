@@ -216,6 +216,21 @@ def reproject_grid(rate, frame, bbox, step):
     return out, (nx, ny)
 
 
+def frames_for(src, d, window):
+    """How many pictures a source keeps for a loop of `window` minutes (15 Nov, the owner's 318 b: 90): the source's cadence — step_min when the
+    source states it, else the typical gap of its frames.json, else five minutes — gives window / cadence + 1 (the picture at -window is in), at most 25."""
+    cad = int(src.get('step_min') or 0)
+    if not cad:
+        try:
+            ts = [dt.datetime.strptime(f['time'], '%Y-%m-%dT%H:%M:%SZ') for f in json.load(open(d + '/frames.json')).get('frames', [])]
+            gaps = sorted(int((b - a).total_seconds() // 60) for a, b in zip(ts, ts[1:]) if b > a)
+            cad = gaps[len(gaps) // 2] if gaps else 0
+        except Exception:
+            cad = 0
+    cad = cad if 1 <= cad <= 60 else 5
+    return max(2, min(25, window // cad + 1))
+
+
 def write_frames(out, src, stamp, img, keep, extra):
     d = out + '/' + src['id']
     os.makedirs(d + '/frames', exist_ok=True)
@@ -1886,6 +1901,7 @@ def main():
     ap.add_argument('--step', type=float, default=0.01); ap.add_argument('--only', default='')
     ap.add_argument('--probe', action='store_true'); ap.add_argument('--file', help='a local GeoTIFF instead of the download (for a try)')
     ap.add_argument('--backfill', type=int, default=12, help='how many of the newest pictures (SMHI) or runs (GeoSphere, at most six on offer) to look at per pass')
+    ap.add_argument('--window', type=int, default=0, help='the loop in minutes (the owner\'s 318 b, 15 Nov: 90): each source keeps window / its cadence + 1 pictures; 0 = --frames for all')
     a = ap.parse_args()
     only = [x for x in a.only.split(',') if x]
     if a.probe:
@@ -1903,6 +1919,7 @@ def main():
         if src.get('await_probe') and src['id'] not in only:
             log(src['id'], 'waits for its probe —', src['await_probe']); continue
         d = a.out + '/' + src['id']; os.makedirs(d, exist_ok=True)
+        if a.window: a.frames = frames_for(src, d, a.window)
         if src.get('kind') in ('geosphere', 'nordic', 'dmi', 'knmi', 'meteofrance', 'chmi', 'dpc', 'aemet', 'imo', 'dwd', 'opera', 'rmi', 'metie', 'ordscan'):
             try:
                 {'geosphere': run_geosphere, 'nordic': run_nordic, 'dmi': run_dmi, 'knmi': run_knmi, 'meteofrance': run_meteofrance, 'chmi': run_chmi, 'dpc': run_dpc, 'aemet': run_aemet, 'imo': run_imo, 'dwd': run_dwd, 'opera': run_opera, 'rmi': run_rmi, 'metie': run_metie, 'ordscan': run_ordscan}[src['kind']](src, a)

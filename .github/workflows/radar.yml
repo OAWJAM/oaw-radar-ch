@@ -35,9 +35,9 @@ jobs:
           key: radar-site-${{ github.run_id }}
           restore-keys: |
             radar-site-
-      - run: python3 convert.py --out site --frames 12 --backfill 12
+      - run: python3 convert.py --out site --frames 19 --backfill 12          # the loop of 90 min (15 Nov, the owner's 318 b): 5-min pictures, the one at -90 in
       # the other national radars (keyless WMS: DWD, FMI) through the same site; a failing service never stops the Swiss picture
-      - run: python3 grids.py --out site --frames 12 --backfill 12
+      - run: python3 grids.py --out site --window 90 --backfill 12            # each source keeps 90 min / its cadence + 1 pictures
         continue-on-error: true
         env:                                    # the keyed radars (6 Nov, late): a source without its secret is skipped; the keys live here, never in the boards
           KNMI_API_KEY: ${{ secrets.KNMI_API_KEY }}
