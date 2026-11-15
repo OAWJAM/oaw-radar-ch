@@ -66,8 +66,9 @@ Moldova, the Baltics, Finland, Iceland, Malta and the coast at Tangier/Oran; not
 Ukraine; Cyprus, the Canaries and Madeira lie outside its grid.
 
 It is the **backup layer**: `sources.json` lists it right after Rainbow's folders, so the boards draw it under every national picture, and the
-converter **cuts it where a national open-data source is fresh** — its newest frame at most 50 minutes old, or 2.5 × the source's own cadence for a
-slower one (GeoSphere's hourly analysis) — so a 15-minute composite never draws an echo twice beside a 5-minute national picture; where a national
+converter **cuts it where a national open-data source is fresh** — its newest frame at most 20 minutes before the newest composite's time (measured
+against the composite, not the clock, so a late GitHub cron delays both alike), or 2.5 × the source's own cadence for a slower one (GeoSphere's hourly
+analysis) — so a 15-minute composite never draws an echo twice beside a 5-minute national picture; where a national
 source is missing (the UK, Iberia, Poland, the Balkans …) or has stopped, OPERA shows. The set of sources it was cut under stands in `eu/cut.json`;
 when the set changes, every kept frame is drawn again from the API's 24-hour store. `OPERA_CUT=0` keeps the composite whole. Its `coverage.json`
 traces the whole reach (uncut), so the union and the Rainbow calculator count everything OPERA sees. `grids.py --probe --only eu` prints the newest

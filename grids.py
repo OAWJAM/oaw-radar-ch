@@ -1449,35 +1449,33 @@ def opera_items(n=12):
     return [(t, out[t]) for t in sorted(out)][-n:]
 
 
-def fresh_sources(out, now, max_age_min=50):
-    """{folder: rings} of the open-data sources whose newest frame is at most max_age_min old (50: Météo-France's quarter-hour packets arrive
-    20–25 min late and the cron may add ten) — the ones OPERA is cut under (the root entry is the Swiss source). A source without a status or
-    with an old picture is not fresh: OPERA shows there (the backup). The ok flag is not read: a failing source's picture simply ages out."""
+def fresh_sources(out, ref, allow_min=20):
+    """{folder: rings} of the open-data sources that had a picture close to the time `ref` (the newest OPERA composite): their newest frame is
+    at most allow_min before it — or 2.5 × the source's own cadence for a slower one (GeoSphere's hourly analysis). Measured against the composite's
+    time, not the clock, so a late cron (GitHub's schedule slips by up to an hour) delays both alike and the set stays put. A source without
+    frames, or whose picture stopped, is not fresh: OPERA shows there (the backup). The root entry is the Swiss source."""
     import coverage as cov
     fresh = {}
     for folder, rings in cov.source_rings(out, with_rainbow=False).items():
         if folder == 'eu':
             continue
-        p = os.path.join(out, '' if folder == 'ch' else folder, 'status.json')
+        base = os.path.join(out, '' if folder == 'ch' else folder)
+        ts = []
         try:
-            st = json.load(open(p))
-        except Exception:
-            continue
-        latest = str(st.get('latest') or '')
-        try:
-            t = parse_time(latest)
-        except Exception:
-            continue
-        allow = max_age_min
-        try:                                                                                        # a slower source (GeoSphere's hourly analysis) gets 2.5 × its own cadence, read from its frames
-            fr = json.load(open(os.path.join(out, '' if folder == 'ch' else folder, 'frames.json'))).get('frames') or []
+            fr = json.load(open(os.path.join(base, 'frames.json'))).get('frames') or []
             ts = sorted(parse_time(f['time']) for f in fr if f.get('time'))
-            if len(ts) >= 2:
-                gaps = sorted((b - a_).total_seconds() / 60 for a_, b in zip(ts, ts[1:]))
-                allow = max(max_age_min, 2.5 * gaps[len(gaps) // 2])
         except Exception:
             pass
-        if (now - t).total_seconds() <= allow * 60:
+        if not ts:
+            try:
+                ts = [parse_time(str(json.load(open(os.path.join(base, 'status.json'))).get('latest') or ''))]
+            except Exception:
+                continue
+        allow = allow_min
+        if len(ts) >= 2:
+            gaps = sorted((b - a_).total_seconds() / 60 for a_, b in zip(ts, ts[1:]))
+            allow = max(allow_min, 2.5 * gaps[len(gaps) // 2])
+        if (ref - ts[-1]).total_seconds() <= allow * 60:
             fresh[folder] = rings
     return fresh
 
@@ -1505,7 +1503,7 @@ def run_opera(src, a):
     if not items:
         raise RuntimeError('the Open Radar Data API names no composite')
     cut_on = os.environ.get('OPERA_CUT', '1').strip() not in ('0', 'no', 'false')
-    fresh = fresh_sources(a.out, now) if cut_on else {}
+    fresh = fresh_sources(a.out, items[-1][0]) if cut_on else {}                                   # measured against the newest composite's time
     names = sorted(fresh)
     prev = None
     try:
