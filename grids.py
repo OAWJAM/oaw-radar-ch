@@ -1542,6 +1542,69 @@ def run_opera(src, a):
     return got
 
 
+def aemet_call(key, path, what='datos'):
+    """One AEMET OpenData call: the gateway answers JSON with a short-lived `datos` link (and `metadatos`); → (status, json or None, text head)."""
+    url = 'https://opendata.aemet.es/opendata/api/' + path.strip('/')
+    r = requests.get(url, headers={'api_key': key, 'Accept': 'application/json', 'User-Agent': UA}, timeout=60)
+    try:
+        j = r.json()
+    except ValueError:
+        j = None
+    return r.status_code, j, re.sub(r'\s+', ' ', r.text[:200])
+
+
+def probe_aemet():
+    """AEMET's georeferenced radar rasters (the HVD endpoints raster/nacional, raster/regional, raster_int/{tipo}/{variable}) with the repository
+    secret: what the gateway answers, what the `datos` link holds (a TIFF? a zip? its frame, bands, GDAL metadata — the ESCALA colours), the
+    metadatos text. The key is used, never printed."""
+    key = os.environ.get('AEMET_API_KEY', '').strip()
+    if not key:
+        log('es: no AEMET_API_KEY in the environment — nothing to probe'); return 0
+    import tifffile, zipfile
+    for path in ('red/radar/raster/nacional', 'red/radar/raster/regional', 'red/radar/raster_int/nacional/reflectividad', 'red/radar/raster_int/regional/reflectividad',
+                 'red/radar/raster_int/nacional/REFLECTIVIDAD', 'red/radar/raster_int/ppi/reflectividad', 'red/radar/raster_int/nacional/zppi', 'red/radar/nacional', 'red/radar/regional/ca'):
+        try:
+            code, j, head = aemet_call(key, path)
+        except Exception as e:
+            log('es probe', path, 'failed:', e); continue
+        log('es probe', path, '→', code, head if not j else {k: (v if k != 'datos' and k != 'metadatos' else v[:90]) for k, v in j.items()})
+        if not j or not j.get('datos'):
+            time.sleep(3); continue
+        try:
+            r2 = requests.get(j['datos'], headers={'User-Agent': UA}, timeout=120)
+            ct = r2.headers.get('content-type'); blob = r2.content
+            log('  datos', r2.status_code, ct, len(blob), 'bytes, last-modified', r2.headers.get('last-modified'), 'disposition', r2.headers.get('content-disposition'), 'head', blob[:16])
+            if blob[:4] in (b'II*\x00', b'MM\x00*'):
+                with tifffile.TiffFile(io.BytesIO(blob)) as tf:
+                    for pi, page in enumerate(tf.pages[:4]):
+                        tags = {t.name: t.value for t in page.tags.values()}
+                        arr = page.asarray()
+                        log('  tiff page', pi, 'shape', arr.shape, 'dtype', arr.dtype, 'photometric', page.photometric, 'tie', tags.get('ModelTiepointTag'), 'scale', tags.get('ModelPixelScaleTag'),
+                            'geokeys', list(tags.get('GeoKeyDirectoryTag') or [])[:24], 'nodata', tags.get('GDAL_NODATA'))
+                        gm = tags.get('GDAL_METADATA')
+                        if gm: log('  gdal metadata', str(gm)[:1500])
+                        if arr.ndim == 3:
+                            flat = arr.reshape(-1, arr.shape[2]); u, c = np.unique(flat, axis=0, return_counts=True); order = np.argsort(-c)
+                            log('  colours', len(u), [(tuple(int(x) for x in u[k]), int(c[k])) for k in order[:24]])
+                        else:
+                            u, c = np.unique(arr, return_counts=True); log('  values', len(u), [(int(u[k]) if np.issubdtype(arr.dtype, np.integer) else float(u[k]), int(c[k])) for k in np.argsort(-c)[:24]])
+                open('/tmp/es_probe_' + path.replace('/', '_') + '.tif', 'wb').write(blob)
+            elif blob[:2] == b'PK':
+                with zipfile.ZipFile(io.BytesIO(blob)) as z:
+                    log('  zip members', [(i.filename, i.file_size) for i in z.infolist()[:40]])
+            else:
+                log('  body head', re.sub(r'\s+', ' ', blob[:400].decode('utf-8', 'replace')))
+        except Exception as e:
+            log('  datos failed:', e)
+        if j.get('metadatos'):
+            try:
+                r3 = requests.get(j['metadatos'], headers={'User-Agent': UA}, timeout=60); log('  metadatos', r3.status_code, re.sub(r'\s+', ' ', r3.text[:1500]))
+            except Exception as e:
+                log('  metadatos failed:', e)
+        time.sleep(3)
+    return 0
+
+
 def probe_opera():
     """The Open Radar Data API: the newest composites, one read, the reach shares at a few places."""
     items = opera_items(4)
@@ -1565,6 +1628,8 @@ def main():
     if a.probe:
         if 'eu' in only:
             return probe_opera()
+        if 'es' in only:
+            return probe_aemet()
         return probe() if (not only or 'se' in only) else (probe_austria() if 'at' in only else (probe_thredds() if 'thredds' in only else (probe_dmi() if 'dmi' in only else (probe_chmi() if 'cz' in only else (probe_dwd() if 'de' in only else (probe_dpc() if 'it' in only else probe_norway()))))))
     os.makedirs(a.out, exist_ok=True)
     for src in SOURCES:

@@ -35,6 +35,11 @@ jobs:
         continue-on-error: true
       - run: python3 grids.py --probe --only eu
         continue-on-error: true
+      # AEMET (15 Nov, the owner: «ES hinzugefügt»): the georeferenced raster endpoints with the secret — the key is used, never printed
+      - run: python3 grids.py --probe --only es
+        continue-on-error: true
+        env:
+          AEMET_API_KEY: ${{ secrets.AEMET_API_KEY }}
       # the two chart sources the boards read (7 Nov): ECMWF Open Charts' answers (run, areas, levels), MET Norway's sigcharts list shape
       - run: python3 probe_charts.py
         continue-on-error: true
