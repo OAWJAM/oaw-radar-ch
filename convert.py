@@ -207,7 +207,7 @@ def swiss_reach(shape, bbox):
     return ok
 
 
-COVERAGE_V = 4                                                                   # bump to have every source trace its edge afresh on the next pass
+COVERAGE_V = 5                                                                   # bump to have every source trace its edge afresh on the next pass
 
 
 def coverage_stale(out: str, stamp) -> bool:
