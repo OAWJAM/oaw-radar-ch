@@ -1579,7 +1579,7 @@ def probe_aemet():
     import tifffile, tarfile
     for n_, path in enumerate(('red/radar/raster/nacional', 'red/radar/raster/regional')):
         if n_:
-            time.sleep(25)
+            time.sleep(66)
         try:
             code, j, head = aemet_call(key, path)
         except Exception as e:
@@ -1587,11 +1587,14 @@ def probe_aemet():
         log('es probe', path, '→', code, head if not j else {k: (v if k not in ('datos', 'metadatos') else v[:60]) for k, v in j.items()})
         if not j or not j.get('datos'):
             continue
-        time.sleep(8)
         try:
-            r2 = requests.get(j['datos'], headers={'User-Agent': UA}, timeout=180)
-            ct = r2.headers.get('content-type'); blob = r2.content
-            log('  datos', r2.status_code, ct, len(blob), 'bytes, last-modified', r2.headers.get('last-modified'), 'disposition', r2.headers.get('content-disposition'), 'head', blob[:8])
+            for attempt in range(3):                                                                  # the raster class seems limited to one request a minute per key (02:11Z: the download 8 s after the call → 429)
+                time.sleep(66)
+                r2 = requests.get(j['datos'], headers={'User-Agent': UA}, timeout=180)
+                ct = r2.headers.get('content-type'); blob = r2.content
+                log('  datos', attempt, r2.status_code, ct, len(blob), 'bytes, last-modified', r2.headers.get('last-modified'), 'disposition', r2.headers.get('content-disposition'), 'head', blob[:8])
+                if r2.status_code == 200 and not str(ct).startswith('text/html'):
+                    break
             if blob[:2] == b'\x1f\x8b' or 'gzip' in str(ct) or 'octet' in str(ct):
                 with tarfile.open(fileobj=io.BytesIO(blob), mode='r:*') as tf:
                     members = [m for m in tf.getmembers() if m.isfile()]
