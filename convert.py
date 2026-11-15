@@ -177,7 +177,10 @@ def coverage_rings(valid: np.ndarray, bbox, step: float, coarse: float = 0.1, mi
     for c in measure.find_contours(pad, 0.5):
         if len(c) < min_len:
             continue
-        pts = [[round(W + (col - 1 + 0.5) * f * step, 3), round(N - (row - 1 + 0.5) * f * step, 3)] for row, col in c[::2]]
+        tol = 0.4; ap = measure.approximate_polygon(c, tolerance=tol)                   # Douglas–Peucker: the boards take 800 points a ring (OPERA's edge had 1 258 — 15 Nov, cut short on the chart)
+        while len(ap) > 780 and tol < 8:
+            tol *= 1.5; ap = measure.approximate_polygon(c, tolerance=tol)
+        pts = [[round(W + (col - 1 + 0.5) * f * step, 3), round(N - (row - 1 + 0.5) * f * step, 3)] for row, col in ap]
         if pts and pts[0] != pts[-1]:
             pts.append(pts[0])
         rings.append(pts)
