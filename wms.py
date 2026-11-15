@@ -180,7 +180,7 @@ def write_frames(out, src, stamp, png, keep):
     return key, len(frames)
 
 
-NAMES = {'de': 'Germany', 'fi': 'Finland', 'se': 'Sweden', 'no': 'Norway · Sweden · Finland', 'at': 'Austria', 'dk': 'Denmark', 'nl': 'Netherlands', 'fr': 'France', 'es': 'Spain', 'it': 'Italy', 'si': 'Slovenia', 'cz': 'Czechia', 'eu': 'Europe (OPERA composite)', 'be': 'Belgium', 'ie': 'Ireland', 'is': 'Iceland'}
+NAMES = {'de': 'Germany', 'fi': 'Finland', 'se': 'Sweden', 'no': 'Norway · Sweden · Finland', 'at': 'Austria', 'dk': 'Denmark', 'nl': 'Netherlands', 'fr': 'France', 'es': 'Spain', 'it': 'Italy', 'si': 'Slovenia', 'cz': 'Czechia', 'eu': 'Europe (OPERA composite)', 'be': 'Belgium', 'ie': 'Ireland', 'is': 'Iceland', 'ic': 'Canary Islands'}
 
 
 def write_sources(out, done):

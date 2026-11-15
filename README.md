@@ -71,6 +71,15 @@ on the 0.01° grid over 11.5 – 4.5 W · 50.5 – 56 N by great-circle range an
 Marshall–Palmer to mm/h, below 5 dBZ dry, no data beyond both reaches. The sweeps are the services' «corrected reflectivity»; a radial spoke of
 interference may still show now and then.
 
+## The Canary Islands — AEMET's island radars through the Open Radar Data API (15 Nov)
+
+The Canaries lie outside the OPERA composite's grid, and AEMET's own OpenData hands its new georeferenced rasters out only behind a usage limit
+(every download of 15 Nov answered 429), but the Open Radar Data API also serves the **single-site volumes** of every OPERA member radar — AEMET's
+two island radars among them: **Artenara** on Gran Canaria (`0-724-0-esatn`) and **Buenavista Norte** on Tenerife (`0-724-0-esbnv`), ODIM polar
+volumes every ten minutes, CC BY 4.0, no key. Source `ic` (kind `ordscan`) composes them as source `ie` composes Ireland's: the lowest sweep laid on
+the 0.01° grid over 18.6 – 12.9 W · 26.9 – 29.7 N by range and bearing, the stronger echo where both see, Marshall–Palmer to mm/h. The reach is
+written only from a slot both radars reached. No AEMET key is needed for this; `AEMET_API_KEY` stays for the day the raster endpoints open up.
+
 ## Europe — the OPERA composite as the backup layer (15 Nov, the owner: «alle Länder einbinden, die über OPERA liefern — als Backup»)
 
 EUMETNET's **OPERA** programme composes the radars of about thirty European weather services every 15 minutes. Since 20 May 2026 the composite is

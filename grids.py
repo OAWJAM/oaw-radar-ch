@@ -63,6 +63,10 @@ SOURCES = [
      'note': 'Met \u00c9ireann\'s open radar data (opendata2.met.ie/radar/latest, CC BY 4.0, no key — 15 Nov, the owner: «BE / IE bauen»): the two radars Shannon (T_PAGZ40, 500 m bins to 248 km) and '
              'Dublin (T_PAGZ41, 1 km bins to 250 km) come as ODIM polar volumes every five minutes, no composite but an hourly accumulation; the converter takes each volume\'s lowest sweep '
              '(0.5\u00b0, DBZH), lays it on the grid by range and bearing from the radar and keeps the stronger echo where both see — Marshall–Palmer to mm/h, below 5 dBZ dry; beyond both reaches no data.'},
+    {'id': 'ic', 'kind': 'ordscan', 'name': 'Canary Islands', 'source': 'AEMET via EUMETNET OPERA', 'licence': 'CC BY 4.0, Source: AEMET (EUMETNET OPERA single-site data)', 'product': 'Artenara + Buenavista Norte radars, lowest sweep, composed here (10 min)',
+     'bbox': (-18.6, 26.9, -12.9, 29.7), 'step_min': 10, 'step': 0.01, 'platforms': ['0-724-0-esatn', '0-724-0-esbnv'], 'slot_min': 10,
+     'note': 'The Canary Islands lie outside the OPERA composite\'s grid, but AEMET\'s two island radars — Artenara on Gran Canaria and Buenavista Norte on Tenerife — come as single-site ODIM volumes '
+             'through the Open Radar Data API (CC BY 4.0, no key, every 10 min); the converter composes them as it does Ireland\'s (15 Nov — no AEMET key needed for this).'},
     {'id': 'eu', 'kind': 'opera', 'name': 'Europe (OPERA composite)', 'source': 'EUMETNET OPERA', 'licence': 'CC BY 4.0, Source: EUMETNET OPERA', 'product': 'OPERA NIMBUS instantaneous rain rate composite (15 min, 2 km)',
      'bbox': (-25.0, 31.5, 45.0, 72.0), 'step_min': 15, 'step': 0.02, 'backup': True,
      'note': 'EUMETNET\'s OPERA composite from the Open Radar Data API on MeteoGate (open since 20 May 2026 under the EU high-value-datasets rules): the rain rate every 15 min on a 2 km LAEA grid, '
@@ -1672,7 +1676,8 @@ def ie_polar(blob):
         dbz = raw.astype(np.float32) * gain + offset
         if nod is not None: dbz[raw == nod] = np.nan
         if und is not None: dbz[raw == und] = -32.0
-        return {'lon': float(wh['lon']), 'lat': float(wh['lat']), 'rscale': float(w.get('rscale', 1000.0)), 'rstart': float(w.get('rstart', 0.0)) * 1000.0,
+        rstart = float(w.get('rstart', 0.0)); rstart = rstart * 1000.0 if rstart < 50 else rstart                  # ODIM says km; AEMET writes 200 (metres) — a start past 50 km is no start
+        return {'lon': float(wh['lon']), 'lat': float(wh['lat']), 'rscale': float(w.get('rscale', 1000.0)), 'rstart': rstart,
                 'nbins': int(w.get('nbins', raw.shape[1])), 'nrays': int(w.get('nrays', raw.shape[0])), 'dbz': dbz, 'el': el}
 
 
@@ -1716,11 +1721,80 @@ def run_metie(src, a):
             rate = odim_rate(comp.astype(np.float32), 'DBZH')
             img = convert.paint(rate)
             wet = float(np.nanmean(rate >= 0.1)) if np.isfinite(rate).any() else 0.0
-            if convert.coverage_stale(d, stamp):
+            if convert.coverage_stale(d, stamp) and len(fields) == len(IE_SITES):                         # the reach only from a slot both radars reached
                 convert.write_coverage(d, np.isfinite(rate), src['bbox'], step, src['source'])
             k, n = write_frames(a.out, src, stamp, img, a.frames, {'wet_share': round(wet, 4), 'width': nx, 'height': ny, 'step_deg': step, 'url': IE_LATEST, 'note': src.get('note', ''), 'cadence_min': 5,
                                                                      'radars': [IE_SITES.get(c, c) for c in sorted(urls)]})
             log('  done', k, (nx, ny), 'wet share', round(wet, 4), 'frames', n, 'radars', [IE_SITES.get(c, c) for c in sorted(urls)], 'reach share', round(float(np.isfinite(rate).mean()), 3)); got += 1
+        except Exception as e:
+            log('  ', stamp.strftime('%H:%MZ'), 'failed:', e)
+    if not got:
+        raise RuntimeError('no slot converted')
+    return got
+
+
+def ord_scan_items(platform, n=12, slot_min=10):
+    """The newest n volumes of one OPERA single-site radar from the Open Radar Data API, oldest first: [(slot, href)] — the coverage of the lowest
+    elevation, the stamp read from the file name (<nod>@YYYYMMDDTHHMM@…), one file per slot (the newest)."""
+    r = get(ORD.rsplit('/', 1)[0] + '/' + platform, params={'parameter-name': 'DBZH:scan', 'format': 'ODIM'}, headers={'Accept': 'application/json'})
+    j = r.json(); covs = j.get('coverages') or [j]
+    def zof(c):
+        try: return float((c.get('domain') or {}).get('axes', {}).get('z', {}).get('values', [99])[0])
+        except Exception: return 99.0
+    zmin = min(zof(c) for c in covs)
+    out = {}
+    for c in covs:
+        if zof(c) > zmin + 0.05:
+            continue
+        for l in c.get('links') or []:
+            h = l.get('href') or ''
+            m = re.search(r'@(\d{8})T(\d{4})@', h)
+            if l.get('type') == 'application/x-odim' and m:
+                t = dt.datetime.strptime(m.group(1) + m.group(2), '%Y%m%d%H%M').replace(tzinfo=dt.timezone.utc)
+                slot = (t + dt.timedelta(seconds=slot_min * 30)).replace(second=0, microsecond=0); slot -= dt.timedelta(minutes=slot.minute % slot_min)
+                if slot not in out or t > out[slot][0]:
+                    out[slot] = (t, h)
+    return [(t, out[t][1]) for t in sorted(out)][-n:]
+
+
+def run_ordscan(src, a):
+    """Single-site radars of the Open Radar Data API composed onto the source's box (15 Nov, the Canary Islands): every slot of the last hours
+    not yet a frame — each platform's newest volume of that slot read (ie_polar), laid on the grid (ie_sample), the stronger echo kept."""
+    d = a.out + '/' + src['id']; step = src.get('step', a.step); slot_min = src.get('slot_min', 10)
+    per = {}
+    for pf in src['platforms']:
+        try:
+            for t, h in ord_scan_items(pf, max(1, a.backfill), slot_min):
+                per.setdefault(t, {})[pf] = h
+        except Exception as e:
+            log(src['id'], pf, 'list failed:', e)
+    slots = sorted(per)[-max(1, a.backfill):]
+    if not slots:
+        raise RuntimeError('no volume named by the API')
+    todo = [t for t in slots if not os.path.exists(d + '/frames/' + t.strftime('%Y%m%d%H%M') + '.png')]
+    if not todo:
+        log(src['id'], 'already there', slots[-1].strftime('%Y%m%d%H%M')); return 0
+    W, S, E, N = src['bbox']; nx = int(round((E - W) / step)); ny = int(round((N - S) / step))
+    LON, LAT = np.meshgrid(W + (np.arange(nx) + 0.5) * step, N - (np.arange(ny) + 0.5) * step)
+    got = 0
+    for stamp in todo:
+        try:
+            fields = []; names = []
+            for pf, url in sorted(per[stamp].items()):
+                try:
+                    vol = ie_polar(get(url, headers={'Accept': '*/*'}).content); fields.append(ie_sample(vol, LON, LAT)); names.append(pf.rsplit('-', 1)[-1])
+                except Exception as e:
+                    log('  ', stamp.strftime('%H:%MZ'), pf, 'failed:', e)
+            if not fields:
+                raise RuntimeError('no volume read')
+            stack = np.stack(fields); comp = np.where(np.all(np.isnan(stack), axis=0), np.nan, np.nanmax(np.where(np.isnan(stack), -99.0, stack), axis=0))
+            rate = odim_rate(comp.astype(np.float32), 'DBZH')
+            img = convert.paint(rate)
+            wet = float(np.nanmean(rate >= 0.1)) if np.isfinite(rate).any() else 0.0
+            if convert.coverage_stale(d, stamp) and len(fields) == len(src['platforms']):                 # the reach only from a slot every radar reached
+                convert.write_coverage(d, np.isfinite(rate), src['bbox'], step, src['source'])
+            k, n = write_frames(a.out, src, stamp, img, a.frames, {'wet_share': round(wet, 4), 'width': nx, 'height': ny, 'step_deg': step, 'url': ORD, 'note': src.get('note', ''), 'cadence_min': slot_min, 'radars': names})
+            log('  done', k, (nx, ny), 'wet share', round(wet, 4), 'frames', n, 'radars', names, 'reach share', round(float(np.isfinite(rate).mean()), 3)); got += 1
         except Exception as e:
             log('  ', stamp.strftime('%H:%MZ'), 'failed:', e)
     if not got:
@@ -1829,9 +1903,9 @@ def main():
         if src.get('await_probe') and src['id'] not in only:
             log(src['id'], 'waits for its probe —', src['await_probe']); continue
         d = a.out + '/' + src['id']; os.makedirs(d, exist_ok=True)
-        if src.get('kind') in ('geosphere', 'nordic', 'dmi', 'knmi', 'meteofrance', 'chmi', 'dpc', 'aemet', 'imo', 'dwd', 'opera', 'rmi', 'metie'):
+        if src.get('kind') in ('geosphere', 'nordic', 'dmi', 'knmi', 'meteofrance', 'chmi', 'dpc', 'aemet', 'imo', 'dwd', 'opera', 'rmi', 'metie', 'ordscan'):
             try:
-                {'geosphere': run_geosphere, 'nordic': run_nordic, 'dmi': run_dmi, 'knmi': run_knmi, 'meteofrance': run_meteofrance, 'chmi': run_chmi, 'dpc': run_dpc, 'aemet': run_aemet, 'imo': run_imo, 'dwd': run_dwd, 'opera': run_opera, 'rmi': run_rmi, 'metie': run_metie}[src['kind']](src, a)
+                {'geosphere': run_geosphere, 'nordic': run_nordic, 'dmi': run_dmi, 'knmi': run_knmi, 'meteofrance': run_meteofrance, 'chmi': run_chmi, 'dpc': run_dpc, 'aemet': run_aemet, 'imo': run_imo, 'dwd': run_dwd, 'opera': run_opera, 'rmi': run_rmi, 'metie': run_metie, 'ordscan': run_ordscan}[src['kind']](src, a)
             except Exception as e:
                 log(src['id'], 'failed:', e)
                 json.dump({'ok': False, 'error': str(e)[:300], 'at': dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}, open(d + '/status.json', 'w'), indent=1)
