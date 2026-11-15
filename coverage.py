@@ -62,8 +62,10 @@ def rasterize(rings_by_source) -> np.ndarray:
     return np.asarray(im) > 127
 
 
-def trace(mask: np.ndarray, min_len: int = 12, max_pts: int = 700):
-    """The mask's 0.5 contour as rings of [lon, lat] — the outer edge, inner contours (holes) too when a hole is large enough to matter."""
+def trace(mask: np.ndarray, min_len: int = 12, max_pts: int = 1500):
+    """The mask's 0.5 contour as rings of [lon, lat] — the outer edge, inner contours (holes) too when a hole is large enough to matter.
+    The contour is simplified by Douglas–Peucker (a tolerance of half a cell, raised until the ring fits max_pts) — taking every n-th point
+    instead let the Europe-wide ring of 15 Nov cross itself, and the calculator's hatch showed a hole over the middle of Europe."""
     from skimage import measure
     W, S, E, N = BBOX
     pad = np.zeros((mask.shape[0] + 2, mask.shape[1] + 2), dtype=float); pad[1:-1, 1:-1] = mask
@@ -71,8 +73,10 @@ def trace(mask: np.ndarray, min_len: int = 12, max_pts: int = 700):
     for c in measure.find_contours(pad, 0.5):
         if len(c) < min_len:
             continue
-        every = max(2, -(-len(c) // max_pts))                                    # the boards take 800 points a ring: thin the contour to fit (every 2nd point at least)
-        pts = [[round(W + (col - 1 + 0.5) * STEP, 3), round(N - (row - 1 + 0.5) * STEP, 3)] for row, col in c[::every]]
+        tol = 0.5; ap = measure.approximate_polygon(c, tolerance=tol)
+        while len(ap) > max_pts and tol < 8:
+            tol *= 1.5; ap = measure.approximate_polygon(c, tolerance=tol)
+        pts = [[round(W + (col - 1 + 0.5) * STEP, 3), round(N - (row - 1 + 0.5) * STEP, 3)] for row, col in ap]
         if pts and pts[0] != pts[-1]:
             pts.append(pts[0])
         rings.append(pts)
