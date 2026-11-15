@@ -180,7 +180,7 @@ def write_frames(out, src, stamp, png, keep):
     return key, len(frames)
 
 
-NAMES = {'de': 'Germany', 'fi': 'Finland', 'se': 'Sweden', 'no': 'Norway · Sweden · Finland', 'at': 'Austria', 'dk': 'Denmark', 'nl': 'Netherlands', 'fr': 'France', 'es': 'Spain', 'it': 'Italy', 'si': 'Slovenia', 'cz': 'Czechia'}
+NAMES = {'de': 'Germany', 'fi': 'Finland', 'se': 'Sweden', 'no': 'Norway · Sweden · Finland', 'at': 'Austria', 'dk': 'Denmark', 'nl': 'Netherlands', 'fr': 'France', 'es': 'Spain', 'it': 'Italy', 'si': 'Slovenia', 'cz': 'Czechia', 'eu': 'Europe (OPERA composite)', 'be': 'Belgium', 'ie': 'Ireland'}
 
 
 def write_sources(out, done):
@@ -190,7 +190,7 @@ def write_sources(out, done):
     for d in RETIRED:                                                          # a retired source's folder goes, so the list never names it again
         if os.path.isdir(out + '/' + d):
             import shutil; shutil.rmtree(out + '/' + d, ignore_errors=True); log('retired folder removed:', d)
-    for d in sorted(os.listdir(out), key=lambda n: (0 if n.startswith('rb-') else 1, n)):   # Rainbow.ai's world mosaic first = at the bottom; the national pictures lie on it (7 Nov)
+    for d in sorted(os.listdir(out), key=lambda n: (0 if n.startswith('rb-') else (1 if n == 'eu' else 2), n)):   # Rainbow.ai's world mosaic first = at the bottom, the OPERA backup layer next (15 Nov); the national pictures lie on them (7 Nov)
         fj = out + '/' + d + '/frames.json'
         if not re.match(r'^[a-z0-9_-]{1,16}$', d) or not os.path.isfile(fj):
             continue

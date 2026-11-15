@@ -54,6 +54,25 @@ radar description PDFs name none — `grids.py --probe --only cz` prints what th
 histogram of the newest file and how much of the portal's own PNG of that minute is painted (a dry picture is a dry picture: on 7 Nov 09:50Z the
 field had 0.7 % of its cells above undetect, all under 5 dBZ, and the PNG 2.4 % painted).
 
+## Europe — the OPERA composite as the backup layer (15 Nov, the owner: «alle Länder einbinden, die über OPERA liefern — als Backup»)
+
+EUMETNET's **OPERA** programme composes the radars of about thirty European weather services every 15 minutes. Since 20 May 2026 the composite is
+open: the **Open Radar Data API** on MeteoGate (`api.meteogate.eu/eu-eumetnet-weather-radar`, an OGC EDR service, no key, CC BY 4.0 — the EU
+high-value-datasets rules) lists the last 24 hours and links every file in ECMWF's object store. Source `eu` (kind `opera`) reads the
+**NIMBUS instantaneous rain rate composite** (`OPERA@YYYYMMDDTHHMM@0@RATE.h5`, ODIM HDF5, 2 km LAEA, 1 900 × 2 200, nodata −9 999 000 /
+undetect −8 888 000) onto 0.02° latitude/longitude over 25 W – 45 E · 31.5 – 72 N. Measured on the 01:30Z picture of 15 Nov the composite carries
+the UK, Ireland, Portugal, Spain, Belgium/Luxembourg, Poland, Slovakia, Hungary, Slovenia, Croatia, Bosnia, Serbia, Montenegro, Bulgaria, Romania,
+Moldova, the Baltics, Finland, Iceland, Malta and the coast at Tangier/Oran; not Greece, Turkey, Kosovo, North Macedonia, most of Albania or eastern
+Ukraine; Cyprus, the Canaries and Madeira lie outside its grid.
+
+It is the **backup layer**: `sources.json` lists it right after Rainbow's folders, so the boards draw it under every national picture, and the
+converter **cuts it where a national open-data source is fresh** — its newest frame at most 50 minutes old, or 2.5 × the source's own cadence for a
+slower one (GeoSphere's hourly analysis) — so a 15-minute composite never draws an echo twice beside a 5-minute national picture; where a national
+source is missing (the UK, Iberia, Poland, the Balkans …) or has stopped, OPERA shows. The set of sources it was cut under stands in `eu/cut.json`;
+when the set changes, every kept frame is drawn again from the API's 24-hour store. `OPERA_CUT=0` keeps the composite whole. Its `coverage.json`
+traces the whole reach (uncut), so the union and the Rainbow calculator count everything OPERA sees. `grids.py --probe --only eu` prints the newest
+items and one file's statistics.
+
 ## Germany — DWD's RV composite as data, with the RADVOR steps ahead (14 Nov, the owner: «Radar de/at ja»)
 
 Since 14 Nov `grids.py` source `de` (kind `dwd`) reads the **RV composite** from DWD's open-data server — `opendata.dwd.de/weather/radar/composite/rv/`,

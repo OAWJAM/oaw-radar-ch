@@ -53,7 +53,13 @@ SOURCES = [
     {'id': 'cz', 'kind': 'chmi', 'name': 'Czechia', 'source': '\u010cHM\u00da', 'licence': 'CC BY 4.0 (the \u010cHM\u00da open-data page carries the CC BY 4.0 mark; the data server itself names none), Source: \u010cHM\u00da', 'product': 'MAX_Z composite',
      'bbox': (11.2, 48.0, 19.7, 51.5), 'step_min': 5, 'step': 0.01,
      'note': '\u010cHM\u00da\'s radar composite (maximum reflectivity, 1 km Mercator, every 5 min) from the open-data portal opendata.chmi.cz — ODIM HDF5, no key (7 Nov, the owner: «CZ ja»)'},
+    {'id': 'eu', 'kind': 'opera', 'name': 'Europe (OPERA composite)', 'source': 'EUMETNET OPERA', 'licence': 'CC BY 4.0, Source: EUMETNET OPERA', 'product': 'OPERA NIMBUS instantaneous rain rate composite (15 min, 2 km)',
+     'bbox': (-25.0, 31.5, 45.0, 72.0), 'step_min': 15, 'step': 0.02, 'backup': True,
+     'note': 'EUMETNET\'s OPERA composite from the Open Radar Data API on MeteoGate (open since 20 May 2026 under the EU high-value-datasets rules): the rain rate every 15 min on a 2 km LAEA grid, '
+             'ODIM HDF5, CC BY 4.0, no key — the radars of ~30 services (the UK, Ireland, Iberia, Poland, the Balkans, the Baltics among them; not Greece, Turkey, Cyprus). The owner (15 Nov 02:51): '
+             '«alle Länder einbinden, die über OPERA liefern — als Backup»: it lies under the national sources and is cut where one of them is fresh (OPERA_CUT=0 keeps it whole), so no echo is drawn twice.'},
 ]
+ORD = 'https://api.meteogate.eu/eu-eumetnet-weather-radar/collections/observations/locations/0-20010-0-OPERA'   # the OPERA composite's time series: the 24 h of download links (ODIM, 15 min)
 DMI = 'https://opendataapi.dmi.dk/v1/radardata'
 KNMI = 'https://api.dataplatform.knmi.nl/open-data/v1/datasets/radar_reflectivity_composites/versions/2.0/files'
 MF_TOKEN = 'https://portail-api.meteofrance.fr/token'
@@ -1430,6 +1436,126 @@ def probe():
     return 0
 
 
+def opera_items(n=12):
+    """The newest n OPERA rain-rate composites, oldest first: [(stamp, href)] — the time series' ODIM download links (the stamp read from the
+    file name OPERA@YYYYMMDDTHHMM@0@RATE.h5, never from the index)."""
+    r = get(ORD, params={'parameter-name': 'RATE:comp', 'level': '0.0', 'format': 'ODIM'}, headers={'Accept': 'application/json'})
+    j = r.json(); out = {}
+    for l in j.get('links') or []:
+        h = l.get('href') or ''
+        m = re.search(r'OPERA@(\d{8})T(\d{4})@\d+@RATE\.h5$', h)
+        if l.get('type') == 'application/x-odim' and m:
+            out[dt.datetime.strptime(m.group(1) + m.group(2), '%Y%m%d%H%M').replace(tzinfo=dt.timezone.utc)] = h
+    return [(t, out[t]) for t in sorted(out)][-n:]
+
+
+def fresh_sources(out, now, max_age_min=50):
+    """{folder: rings} of the open-data sources whose newest frame is at most max_age_min old (50: Météo-France's quarter-hour packets arrive
+    20–25 min late and the cron may add ten) — the ones OPERA is cut under (the root entry is the Swiss source). A source without a status or
+    with an old picture is not fresh: OPERA shows there (the backup). The ok flag is not read: a failing source's picture simply ages out."""
+    import coverage as cov
+    fresh = {}
+    for folder, rings in cov.source_rings(out, with_rainbow=False).items():
+        if folder == 'eu':
+            continue
+        p = os.path.join(out, '' if folder == 'ch' else folder, 'status.json')
+        try:
+            st = json.load(open(p))
+        except Exception:
+            continue
+        latest = str(st.get('latest') or '')
+        try:
+            t = parse_time(latest)
+        except Exception:
+            continue
+        allow = max_age_min
+        try:                                                                                        # a slower source (GeoSphere's hourly analysis) gets 2.5 × its own cadence, read from its frames
+            fr = json.load(open(os.path.join(out, '' if folder == 'ch' else folder, 'frames.json'))).get('frames') or []
+            ts = sorted(parse_time(f['time']) for f in fr if f.get('time'))
+            if len(ts) >= 2:
+                gaps = sorted((b - a_).total_seconds() / 60 for a_, b in zip(ts, ts[1:]))
+                allow = max(max_age_min, 2.5 * gaps[len(gaps) // 2])
+        except Exception:
+            pass
+        if (now - t).total_seconds() <= allow * 60:
+            fresh[folder] = rings
+    return fresh
+
+
+def cut_mask(rings_by_source, bbox, step):
+    """The fresh sources' reach filled on the OPERA grid (rows north → south) — True where OPERA is cut."""
+    from PIL import ImageDraw
+    W, S, E, N = bbox
+    nx, ny = int(round((E - W) / step)), int(round((N - S) / step))
+    im = Image.new('L', (nx, ny), 0); dr = ImageDraw.Draw(im)
+    for folder, rings in rings_by_source.items():
+        for ring in rings:
+            pts = [((float(q[0]) - W) / step, (N - float(q[1])) / step) for q in ring if isinstance(q, (list, tuple)) and len(q) >= 2]
+            if len(pts) >= 3:
+                dr.polygon(pts, fill=255)
+    return np.asarray(im) > 127
+
+
+def run_opera(src, a):
+    """The OPERA composite as the backup layer (15 Nov): every 15-min composite of the last hours that is not yet a frame; the field is cut where
+    a national source is fresh (fresh_sources), the reach written whole (the union and the Rainbow calculator count all OPERA sees); when the
+    set of fresh sources changes, every kept frame is drawn again from the API's 24-hour store, so no stale cut lingers."""
+    d = a.out + '/' + src['id']; step = src.get('step', a.step); now = dt.datetime.now(dt.timezone.utc)
+    items = opera_items(max(1, a.backfill))
+    if not items:
+        raise RuntimeError('the Open Radar Data API names no composite')
+    cut_on = os.environ.get('OPERA_CUT', '1').strip() not in ('0', 'no', 'false')
+    fresh = fresh_sources(a.out, now) if cut_on else {}
+    names = sorted(fresh)
+    prev = None
+    try:
+        prev = json.load(open(d + '/cut.json')).get('sources')
+    except Exception:
+        pass
+    redo = prev is not None and prev != names
+    todo = [(t, h) for t, h in items if redo or not os.path.exists(d + '/frames/' + t.strftime('%Y%m%d%H%M') + '.png')]
+    if not todo:
+        log(src['id'], 'already there', items[-1][0].strftime('%Y%m%d%H%M'), '— cut under', ', '.join(names) or 'none'); return 0
+    mask = cut_mask(fresh, src['bbox'], step) if fresh else None
+    log(src['id'], 'cut under', ', '.join(names) or 'none', '(the set changed — every frame drawn again)' if redo else '', '| to do', len(todo))
+    got = 0
+    for stamp, href in todo:
+        try:
+            blob = get(href).content
+            rate, grid, scale, quantity = convert.read_odim(blob)
+            rate = odim_rate(rate, quantity)
+            field, _, size = convert.reproject(rate, grid, src['bbox'], step)
+            field[np.isfinite(field) & (field < 0.1)] = 0.0
+            reach = np.isfinite(field)
+            if mask is not None:
+                field = field.copy(); field[mask] = np.nan
+            img = convert.paint(field)
+            wet = float(np.nanmean(field >= 0.1)) if np.isfinite(field).any() else 0.0
+            if convert.coverage_stale(d, stamp):
+                convert.write_coverage(d, reach, src['bbox'], step, src['source'])
+            k, n = write_frames(a.out, src, stamp, img, a.frames, {'wet_share': round(wet, 4), 'width': size[0], 'height': size[1], 'step_deg': step, 'url': href, 'note': src.get('note', ''), 'quantity': quantity,
+                                                                     'backup': True, 'cut_under': names, 'cadence_min': src.get('step_min', 15)})
+            log('  done', k, size, 'wet share', round(wet, 4), 'frames', n, 'reach share', round(float(reach.mean()), 3)); got += 1
+        except Exception as e:
+            log('  ', stamp.strftime('%H:%MZ'), 'failed:', e)
+    if not got:
+        raise RuntimeError('no composite converted')
+    json.dump({'sources': names, 'at': now.strftime('%Y-%m-%dT%H:%M:%SZ'), 'note': 'the fresh open-data sources OPERA was cut under when these frames were drawn'}, open(d + '/cut.json', 'w'), indent=1)
+    return got
+
+
+def probe_opera():
+    """The Open Radar Data API: the newest composites, one read, the reach shares at a few places."""
+    items = opera_items(4)
+    log('items:', [(t.strftime('%Y-%m-%dT%H:%MZ'), h.rsplit('/', 1)[-1]) for t, h in items])
+    if not items:
+        return 1
+    blob = get(items[-1][1]).content
+    rate, grid, scale, quantity = convert.read_odim(blob)
+    log('quantity', quantity, 'shape', rate.shape, 'nan share', round(float(np.isnan(rate).mean()), 3), 'wet share', round(float(np.nanmean(rate >= 0.1)), 4), 'max', float(np.nanmax(rate)))
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--out', default='site'); ap.add_argument('--frames', type=int, default=12)
@@ -1439,6 +1565,8 @@ def main():
     a = ap.parse_args()
     only = [x for x in a.only.split(',') if x]
     if a.probe:
+        if 'eu' in only:
+            return probe_opera()
         return probe() if (not only or 'se' in only) else (probe_austria() if 'at' in only else (probe_thredds() if 'thredds' in only else (probe_dmi() if 'dmi' in only else (probe_chmi() if 'cz' in only else (probe_dwd() if 'de' in only else (probe_dpc() if 'it' in only else probe_norway()))))))
     os.makedirs(a.out, exist_ok=True)
     for src in SOURCES:
@@ -1449,9 +1577,9 @@ def main():
         if src.get('await_probe') and src['id'] not in only:
             log(src['id'], 'waits for its probe —', src['await_probe']); continue
         d = a.out + '/' + src['id']; os.makedirs(d, exist_ok=True)
-        if src.get('kind') in ('geosphere', 'nordic', 'dmi', 'knmi', 'meteofrance', 'chmi', 'dpc', 'aemet', 'imo', 'dwd'):
+        if src.get('kind') in ('geosphere', 'nordic', 'dmi', 'knmi', 'meteofrance', 'chmi', 'dpc', 'aemet', 'imo', 'dwd', 'opera'):
             try:
-                {'geosphere': run_geosphere, 'nordic': run_nordic, 'dmi': run_dmi, 'knmi': run_knmi, 'meteofrance': run_meteofrance, 'chmi': run_chmi, 'dpc': run_dpc, 'aemet': run_aemet, 'imo': run_imo, 'dwd': run_dwd}[src['kind']](src, a)
+                {'geosphere': run_geosphere, 'nordic': run_nordic, 'dmi': run_dmi, 'knmi': run_knmi, 'meteofrance': run_meteofrance, 'chmi': run_chmi, 'dpc': run_dpc, 'aemet': run_aemet, 'imo': run_imo, 'dwd': run_dwd, 'opera': run_opera}[src['kind']](src, a)
             except Exception as e:
                 log(src['id'], 'failed:', e)
                 json.dump({'ok': False, 'error': str(e)[:300], 'at': dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}, open(d + '/status.json', 'w'), indent=1)
