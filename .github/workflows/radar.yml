@@ -17,7 +17,7 @@ concurrency:
 jobs:
   convert:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 14
     outputs:
       pages: ${{ steps.pages.outcome == 'success' }}
     steps:
