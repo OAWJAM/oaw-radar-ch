@@ -1577,7 +1577,7 @@ def probe_aemet():
     if not key:
         log('es: no AEMET_API_KEY in the environment — nothing to probe'); return 0
     import tifffile, tarfile
-    for n_, path in enumerate(('red/radar/raster/nacional', 'red/radar/regional/ca', 'red/radar/regional/pa')):   # the raster, then the Canaries' and Palma's pictures (the regional codes of the swagger)
+    for n_, path in enumerate(('red/radar/regional/ca', 'red/radar/regional/ml', 'red/radar/regional/cc', 'red/radar/nacional')):   # which code is the Canaries: the coast sketch tells; the national picture when it is there
         if n_:
             time.sleep(20)
         try:
@@ -1617,6 +1617,11 @@ def probe_aemet():
                                 u, c = np.unique(arr, return_counts=True); log('  values', len(u), [(float(u[k]), int(c[k])) for k in np.argsort(-c)[:30]])
             elif blob[:3] == b'GIF' or str(ct).startswith('image/'):
                 im = Image.open(io.BytesIO(blob)); log('  picture', im.format, im.mode, im.size)
+                a = np.array(im.convert('RGB')).astype(np.int16); coast = (a[..., 0] > 200) & (a[..., 1] > 200) & (a[..., 2] < 90)   # the yellow coastline
+                H, W = coast.shape; rows = []
+                for yy in range(0, 470, 10):
+                    rows.append(''.join('#' if coast[yy:yy + 10, xx:xx + 8].any() else '.' for xx in range(0, W, 8)))
+                log('  coast sketch (the yellow lines, 8 x 10 px cells):\n' + '\n'.join(rows))
                 open('/tmp/es_probe_' + path.replace('/', '_') + '.gif', 'wb').write(blob)
             else:
                 log('  body head', re.sub(r'\s+', ' ', blob[:400].decode('utf-8', 'replace')))
