@@ -102,6 +102,20 @@ def union_write(out: str):
               open(p + '.tmp', 'w'))
     os.replace(p + '.tmp', p)
     log('union of', ', '.join(sorted(srcs)), '→', len(rings), 'rings,', int(mask.sum()), 'cells')
+    # the open-data radars alone (15 Nov, the owner's 320): coverage-open.json beside it — the calculator on the owner page hatches this one, so a
+    # Rainbow area never counts as «covered» for the tiles it is there to buy; the same file when no Rainbow folder runs
+    open_srcs = {k: v for k, v in srcs.items() if not k.startswith('rb-')}
+    po = os.path.join(out, 'coverage-open.json')
+    if open_srcs:
+        omask = rasterize(open_srcs) if len(open_srcs) != len(srcs) else mask
+        orings = trace(omask) if len(open_srcs) != len(srcs) else rings
+        json.dump({'v': UNION_V, 'union': True, 'open': True, 'sources': sorted(open_srcs), 'bbox': {'west': W, 'south': S, 'east': E, 'north': N}, 'crs': 'EPSG:4326', 'step_deg': STEP, 'rings': orings,
+                   'covered_cells': int(omask.sum()), 'note': 'the open-data radars\' reach alone, without the Rainbow.ai areas — what the calculator hatches'}, open(po + '.tmp', 'w'))
+        os.replace(po + '.tmp', po)
+        log('open-data union of', ', '.join(sorted(open_srcs)), '→', len(orings), 'rings,', int(omask.sum()), 'cells')
+    else:
+        try: os.remove(po)
+        except FileNotFoundError: pass
     return len(rings)
 
 
