@@ -54,6 +54,23 @@ radar description PDFs name none — `grids.py --probe --only cz` prints what th
 histogram of the newest file and how much of the portal's own PNG of that minute is painted (a dry picture is a dry picture: on 7 Nov 09:50Z the
 field had 0.7 % of its cells above undetect, all under 5 dBZ, and the PNG 2.4 % painted).
 
+## Belgium — RMI's rainfall composite (15 Nov, the owner: «BE / IE bauen»)
+
+The Royal Meteorological Institute publishes its **Belgian rainfall composite** on its open-data GeoServer (`opendata.meteo.be/geoserver/wms`, layer
+`belgian_rainfall_composite`, the last thirteen hours every five minutes; the catalogue record RMI_DATASET_BELGIAN_COMPOSITE carries CC BY 4.0). The
+WCS and the `/service/radar/wms` path refuse a GetMap (403), only `/geoserver/wms` answers, and it answers a **picture**: source `be` (kind `rmi`) asks one
+GetMap per time in plain latitude/longitude over 1 W – 9.7 E · 47.4 – 53.8 N at 0.01° and reads the server's own legend back — six rain classes
+(0.6–1.8 · 1.8–10 · 10–30 · 30–50 · 50–500 · 500+ mm/h, each painted at its geometric mean), transparent dry, grey beyond the reach. No key.
+
+## Ireland — Met Éireann's two radars, composed here (15 Nov)
+
+Met Éireann's open radar folder (`opendata2.met.ie/radar/latest/`, CC BY 4.0, no key — it was an FTP with credentials by mail until recently) holds
+**polar volumes** of the Shannon (`T_PAGZ40`, 500 m bins to 248 km) and Dublin (`T_PAGZ41`, 1 km bins to 250 km) radars every five minutes and an
+hourly accumulation composite, but no five-minute composite. Source `ie` (kind `metie`) composes one: each volume's lowest sweep (0.5°, DBZH) is laid
+on the 0.01° grid over 11.5 – 4.5 W · 50.5 – 56 N by great-circle range and bearing from the radar, the stronger echo kept where both see,
+Marshall–Palmer to mm/h, below 5 dBZ dry, no data beyond both reaches. The sweeps are the services' «corrected reflectivity»; a radial spoke of
+interference may still show now and then.
+
 ## Europe — the OPERA composite as the backup layer (15 Nov, the owner: «alle Länder einbinden, die über OPERA liefern — als Backup»)
 
 EUMETNET's **OPERA** programme composes the radars of about thirty European weather services every 15 minutes. Since 20 May 2026 the composite is

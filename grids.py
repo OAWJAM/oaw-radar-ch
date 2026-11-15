@@ -58,6 +58,11 @@ SOURCES = [
      'note': 'RMI\'s Belgian rainfall composite from its open-data GeoServer (opendata.meteo.be/geoserver/wms, layer belgian_rainfall_composite, the last 13 hours every 5 min): a GetMap in plain '
              'latitude/longitude, the picture\'s six rain classes (mm/h, from the server\'s own legend) painted at each class\'s geometric mean; grey is beyond the reach. CC BY 4.0 (the catalogue record '
              'RMI_DATASET_BELGIAN_COMPOSITE), no key (15 Nov, the owner: «BE / IE bauen»). The WCS and the /service path refuse a GetMap (403) — only /geoserver/wms answers.'},
+    {'id': 'ie', 'kind': 'metie', 'name': 'Ireland', 'source': 'Met \u00c9ireann', 'licence': 'CC BY 4.0, Source: Met \u00c9ireann', 'product': 'Shannon + Dublin radars, lowest sweep, composed here (5 min)',
+     'bbox': (-11.5, 50.5, -4.5, 56.0), 'step_min': 5, 'step': 0.01,
+     'note': 'Met \u00c9ireann\'s open radar data (opendata2.met.ie/radar/latest, CC BY 4.0, no key — 15 Nov, the owner: «BE / IE bauen»): the two radars Shannon (T_PAGZ40, 500 m bins to 248 km) and '
+             'Dublin (T_PAGZ41, 1 km bins to 250 km) come as ODIM polar volumes every five minutes, no composite but an hourly accumulation; the converter takes each volume\'s lowest sweep '
+             '(0.5\u00b0, DBZH), lays it on the grid by range and bearing from the radar and keeps the stronger echo where both see — Marshall–Palmer to mm/h, below 5 dBZ dry; beyond both reaches no data.'},
     {'id': 'eu', 'kind': 'opera', 'name': 'Europe (OPERA composite)', 'source': 'EUMETNET OPERA', 'licence': 'CC BY 4.0, Source: EUMETNET OPERA', 'product': 'OPERA NIMBUS instantaneous rain rate composite (15 min, 2 km)',
      'bbox': (-25.0, 31.5, 45.0, 72.0), 'step_min': 15, 'step': 0.02, 'backup': True,
      'note': 'EUMETNET\'s OPERA composite from the Open Radar Data API on MeteoGate (open since 20 May 2026 under the EU high-value-datasets rules): the rain rate every 15 min on a 2 km LAEA grid, '
@@ -65,6 +70,8 @@ SOURCES = [
              '«alle Länder einbinden, die über OPERA liefern — als Backup»: it lies under the national sources and is cut where one of them is fresh (OPERA_CUT=0 keeps it whole), so no echo is drawn twice.'},
 ]
 ORD = 'https://api.meteogate.eu/eu-eumetnet-weather-radar/collections/observations/locations/0-20010-0-OPERA'
+IE_LATEST = 'https://opendata2.met.ie/radar/latest/'
+IE_SITES = {'PAGZ40': 'Shannon', 'PAGZ41': 'Dublin'}
 RMI_WMS = 'https://opendata.meteo.be/geoserver/wms'
 RMI_LAYER = 'belgian_rainfall_composite'
 RMI_CLASSES = [((82, 255, 241), 1.04), ((77, 177, 220), 4.2), ((68, 162, 200), 17.3), ((60, 116, 179), 38.7), ((53, 69, 159), 158.0), ((46, 23, 138), 500.0)]   # the legend of 15 Nov: 0.6–1.8 · 1.8–10 · 10–30 · 30–50 · 50–500 · 500+ mm/h → each class's geometric mean (the last two land in the top bins)
@@ -1612,6 +1619,99 @@ def probe_aemet():
     return 0
 
 
+def ie_slots(n=12):
+    """The newest n five-minute slots of Met Éireann's latest folder, oldest first: [(slot, {code: url})] — a volume's stamp (Shannon's seconds run
+    a few past the minute) rounded to the nearest five minutes."""
+    r = get(IE_LATEST, headers={'Accept': 'text/html, */*'})
+    slots = {}
+    for code, stamp in re.findall(r'href="T_(PAGZ4[01])_C_EIDB_(\d{14})\.h5"', r.text):
+        t = dt.datetime.strptime(stamp, '%Y%m%d%H%M%S').replace(tzinfo=dt.timezone.utc)
+        slot = (t + dt.timedelta(seconds=150)).replace(second=0, microsecond=0); slot -= dt.timedelta(minutes=slot.minute % 5)
+        slots.setdefault(slot, {})[code] = IE_LATEST + 'T_%s_C_EIDB_%s.h5' % (code, stamp)
+    return [(t, slots[t]) for t in sorted(slots)][-n:]
+
+
+def ie_polar(blob):
+    """A Met Éireann polar volume's lowest sweep: {'lon','lat','rscale','rstart','nbins','nrays','dbz' (rays × bins, NaN beyond the data, −32 where dry), 'el'}."""
+    import h5py
+    with h5py.File(io.BytesIO(blob), 'r') as f:
+        def A(g): return {k: (v.decode() if isinstance(v, bytes) else (v.item() if hasattr(v, 'item') else v)) for k, v in g.attrs.items()}
+        wh = A(f['where']); best = None
+        for k in f.keys():
+            if not k.startswith('dataset'):
+                continue
+            d = f[k]; w = A(d['where']); el = float(w.get('elangle', 99))
+            q = None
+            for dk in d.keys():
+                if dk.startswith('data') and str(A(d[dk]['what']).get('quantity', '')).upper() == 'DBZH':
+                    q = dk; break
+            if q is None:
+                continue
+            if best is None or el < best[0]:
+                best = (el, k, q, w)
+        if best is None:
+            raise RuntimeError('no DBZH sweep')
+        el, k, q, w = best; dd = f[k][q]; dw = A(dd['what']); raw = dd['data'][...]
+        gain = float(dw.get('gain', 1.0)); offset = float(dw.get('offset', 0.0)); nod = dw.get('nodata'); und = dw.get('undetect')
+        dbz = raw.astype(np.float32) * gain + offset
+        if nod is not None: dbz[raw == nod] = np.nan
+        if und is not None: dbz[raw == und] = -32.0
+        return {'lon': float(wh['lon']), 'lat': float(wh['lat']), 'rscale': float(w.get('rscale', 1000.0)), 'rstart': float(w.get('rstart', 0.0)) * 1000.0,
+                'nbins': int(w.get('nbins', raw.shape[1])), 'nrays': int(w.get('nrays', raw.shape[0])), 'dbz': dbz, 'el': el}
+
+
+def ie_sample(vol, LON, LAT):
+    """The sweep laid on the grid: each cell takes the bin under it by great-circle distance and bearing from the radar (NaN beyond the last bin)."""
+    R = 6371000.0
+    la1 = np.radians(vol['lat']); lo1 = np.radians(vol['lon']); la2 = np.radians(LAT); lo2 = np.radians(LON)
+    dlo = lo2 - lo1
+    dist = R * np.arccos(np.clip(np.sin(la1) * np.sin(la2) + np.cos(la1) * np.cos(la2) * np.cos(dlo), -1.0, 1.0))
+    brg = (np.degrees(np.arctan2(np.sin(dlo) * np.cos(la2), np.cos(la1) * np.sin(la2) - np.sin(la1) * np.cos(la2) * np.cos(dlo))) + 360.0) % 360.0
+    b = np.floor((dist - vol['rstart']) / vol['rscale']).astype(np.int64); r = np.floor(brg / (360.0 / vol['nrays'])).astype(np.int64) % vol['nrays']
+    ok = (b >= 0) & (b < vol['nbins'])
+    out = np.full(LON.shape, np.nan, dtype=np.float32); out[ok] = vol['dbz'][r[ok], b[ok]]
+    return out
+
+
+def run_metie(src, a):
+    """Ireland (15 Nov): every five-minute slot of the latest folder that is not yet a frame — the volumes of that slot read, laid on the grid,
+    the stronger echo kept where both radars see; a slot with one radar alone is drawn with that one."""
+    d = a.out + '/' + src['id']; step = src.get('step', a.step)
+    slots = ie_slots(max(1, a.backfill))
+    if not slots:
+        raise RuntimeError('no volume in the latest folder')
+    todo = [(t, u) for t, u in slots if not os.path.exists(d + '/frames/' + t.strftime('%Y%m%d%H%M') + '.png')]
+    if not todo:
+        log(src['id'], 'already there', slots[-1][0].strftime('%Y%m%d%H%M')); return 0
+    W, S, E, N = src['bbox']; nx = int(round((E - W) / step)); ny = int(round((N - S) / step))
+    LON, LAT = np.meshgrid(W + (np.arange(nx) + 0.5) * step, N - (np.arange(ny) + 0.5) * step)
+    got = 0
+    for stamp, urls in todo:
+        try:
+            fields = []
+            for code, url in sorted(urls.items()):
+                try:
+                    vol = ie_polar(get(url, headers={'Accept': '*/*'}).content); fields.append(ie_sample(vol, LON, LAT))
+                except Exception as e:
+                    log('  ', stamp.strftime('%H:%MZ'), IE_SITES.get(code, code), 'failed:', e)
+            if not fields:
+                raise RuntimeError('no volume read')
+            stack = np.stack(fields); comp = np.where(np.all(np.isnan(stack), axis=0), np.nan, np.nanmax(np.where(np.isnan(stack), -99.0, stack), axis=0))
+            rate = odim_rate(comp.astype(np.float32), 'DBZH')
+            img = convert.paint(rate)
+            wet = float(np.nanmean(rate >= 0.1)) if np.isfinite(rate).any() else 0.0
+            if convert.coverage_stale(d, stamp):
+                convert.write_coverage(d, np.isfinite(rate), src['bbox'], step, src['source'])
+            k, n = write_frames(a.out, src, stamp, img, a.frames, {'wet_share': round(wet, 4), 'width': nx, 'height': ny, 'step_deg': step, 'url': IE_LATEST, 'note': src.get('note', ''), 'cadence_min': 5,
+                                                                     'radars': [IE_SITES.get(c, c) for c in sorted(urls)]})
+            log('  done', k, (nx, ny), 'wet share', round(wet, 4), 'frames', n, 'radars', [IE_SITES.get(c, c) for c in sorted(urls)], 'reach share', round(float(np.isfinite(rate).mean()), 3)); got += 1
+        except Exception as e:
+            log('  ', stamp.strftime('%H:%MZ'), 'failed:', e)
+    if not got:
+        raise RuntimeError('no slot converted')
+    return got
+
+
 def rmi_times(n=12):
     """The newest n times of RMI's composite layer from the WMS capabilities (a start/end/PT5M range), oldest first."""
     r = get(RMI_WMS, params={'service': 'WMS', 'version': '1.3.0', 'request': 'GetCapabilities'}, headers={'Accept': 'text/xml, */*'})
@@ -1713,9 +1813,9 @@ def main():
         if src.get('await_probe') and src['id'] not in only:
             log(src['id'], 'waits for its probe —', src['await_probe']); continue
         d = a.out + '/' + src['id']; os.makedirs(d, exist_ok=True)
-        if src.get('kind') in ('geosphere', 'nordic', 'dmi', 'knmi', 'meteofrance', 'chmi', 'dpc', 'aemet', 'imo', 'dwd', 'opera', 'rmi'):
+        if src.get('kind') in ('geosphere', 'nordic', 'dmi', 'knmi', 'meteofrance', 'chmi', 'dpc', 'aemet', 'imo', 'dwd', 'opera', 'rmi', 'metie'):
             try:
-                {'geosphere': run_geosphere, 'nordic': run_nordic, 'dmi': run_dmi, 'knmi': run_knmi, 'meteofrance': run_meteofrance, 'chmi': run_chmi, 'dpc': run_dpc, 'aemet': run_aemet, 'imo': run_imo, 'dwd': run_dwd, 'opera': run_opera, 'rmi': run_rmi}[src['kind']](src, a)
+                {'geosphere': run_geosphere, 'nordic': run_nordic, 'dmi': run_dmi, 'knmi': run_knmi, 'meteofrance': run_meteofrance, 'chmi': run_chmi, 'dpc': run_dpc, 'aemet': run_aemet, 'imo': run_imo, 'dwd': run_dwd, 'opera': run_opera, 'rmi': run_rmi, 'metie': run_metie}[src['kind']](src, a)
             except Exception as e:
                 log(src['id'], 'failed:', e)
                 json.dump({'ok': False, 'error': str(e)[:300], 'at': dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}, open(d + '/status.json', 'w'), indent=1)
