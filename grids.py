@@ -1577,9 +1577,9 @@ def probe_aemet():
     if not key:
         log('es: no AEMET_API_KEY in the environment — nothing to probe'); return 0
     import tifffile, tarfile
-    for n_, path in enumerate(('red/radar/raster/nacional', 'red/radar/raster/regional')):
+    for n_, path in enumerate(('red/radar/raster/nacional', 'red/radar/regional/ca', 'red/radar/regional/pa')):   # the raster, then the Canaries' and Palma's pictures (the regional codes of the swagger)
         if n_:
-            time.sleep(66)
+            time.sleep(20)
         try:
             code, j, head = aemet_call(key, path)
         except Exception as e:
@@ -1588,11 +1588,11 @@ def probe_aemet():
         if not j or not j.get('datos'):
             continue
         try:
-            for attempt in range(3):                                                                  # the raster class seems limited to one request a minute per key (02:11Z: the download 8 s after the call → 429)
-                time.sleep(66)
-                r2 = requests.get(j['datos'], headers={'User-Agent': UA}, timeout=180)
+            for attempt, (wait, with_key) in enumerate(((2, True), (180, True), (180, False))):      # 02:16–02:24Z: 429 on every download a minute apart — now the key on the download, three minutes between tries
+                time.sleep(wait)
+                r2 = requests.get(j['datos'], headers=({'User-Agent': UA, 'api_key': key} if with_key else {'User-Agent': UA}), params=({'api_key': key} if with_key else None), timeout=180)
                 ct = r2.headers.get('content-type'); blob = r2.content
-                log('  datos', attempt, r2.status_code, ct, len(blob), 'bytes, last-modified', r2.headers.get('last-modified'), 'disposition', r2.headers.get('content-disposition'), 'head', blob[:8])
+                log('  datos', attempt, 'key' if with_key else 'nokey', r2.status_code, ct, len(blob), 'bytes, last-modified', r2.headers.get('last-modified'), 'disposition', r2.headers.get('content-disposition'), 'head', blob[:8], 'retry-after', r2.headers.get('retry-after'), 'ratelimit', {k: v for k, v in r2.headers.items() if 'limit' in k.lower() or 'quota' in k.lower()})
                 if r2.status_code == 200 and not str(ct).startswith('text/html'):
                     break
             if blob[:2] == b'\x1f\x8b' or 'gzip' in str(ct) or 'octet' in str(ct):
@@ -1615,8 +1615,16 @@ def probe_aemet():
                                 log('  colours', len(u), [(tuple(int(x) for x in u[k]), int(c[k])) for k in order[:30]])
                             else:
                                 u, c = np.unique(arr, return_counts=True); log('  values', len(u), [(float(u[k]), int(c[k])) for k in np.argsort(-c)[:30]])
+            elif blob[:3] == b'GIF' or str(ct).startswith('image/'):
+                im = Image.open(io.BytesIO(blob)); log('  picture', im.format, im.mode, im.size)
+                open('/tmp/es_probe_' + path.replace('/', '_') + '.gif', 'wb').write(blob)
             else:
                 log('  body head', re.sub(r'\s+', ' ', blob[:400].decode('utf-8', 'replace')))
+            if j.get('metadatos'):
+                try:
+                    r3 = requests.get(j['metadatos'], headers={'User-Agent': UA}, timeout=60); log('  metadatos', r3.status_code, re.sub(r'\s+', ' ', r3.content.decode('latin-1', 'replace')[:500]))
+                except Exception as e:
+                    log('  metadatos failed:', e)
         except Exception as e:
             log('  datos failed:', e)
     return 0
