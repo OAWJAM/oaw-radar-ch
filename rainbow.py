@@ -21,7 +21,8 @@ run logs «no key — skipped» and stays green. Repository *variables* (same pa
   RAINBOW_FRAMES         0 (default)                                        — the nowcast steps in minutes for the precip products: a list «0,30,60,120,180,240», «loop» (every cadence to +240)
                                                                               or a range «0-240/10»; 0 is the picture of now, the rest go to nowcast/
   RAINBOW_CADENCE_MIN    30 (default)                                       — a new picture only when the newest is at least this old
-  RAINBOW_MONTHLY_TILES  100000 (default)                                   — the month's tile budget over every product and area; reached → skipped until the next month
+  RAINBOW_MONTHLY_TILES  9500 (default)                                     — the month's call budget over every product and area (tiles and snapshot asks); reached → skipped
+                                                                              until the next month. 9 500 stays under Rainbow's Free plan (16 Nov: 10 000 calls a month)
   RAINBOW_COLOR          dbz_u8 (default)                                   — the palette asked for the precip products: dbz_u8 carries raw dBZ in the red
                                                                               channel and is painted in this site's own scale; a number (0–9) keeps Rainbow's picture
   RAINBOW_TYPE_COLOR     0 (default)                                        — the palette of the type product (Rainbow paints rain, snow and mixed itself)
@@ -34,9 +35,13 @@ EPSG:3857 and the product's kind — the boards lay a Mercator picture on their 
 kind alone until they have a layer for the others), status.json, coverage.json (the edge of the radars' reach from the
 transparent pixels), nowcast/ (the steps beyond now) and usage.json (the month's tile count — the budget's memory).
 
-The cost (Rainbow's list as read on 7 Nov: 30 000 tiles a month free, then 0.20 $ a thousand): tiles = products × area tiles ×
-runs. europe:5 with the three default products at 30 min ≈ 207 000 tiles ≈ 35 $ a month; the 25-step nowcast loop of one
-product over europe:5 at 10 min alone would be 5.2 million ≈ 1 030 $ — the levers are RAINBOW_FRAMES, RAINBOW_CADENCE_MIN and the zoom.
+The cost (Rainbow's plans as read on 16 Nov — the legacy pay-as-you-go plan is discontinued): Free 10 000 calls a month, no card,
+the service pauses at the limit (the budget here stops first); Starter 260 000 calls for 25 $, Growth 1.1 million for 100 $, Pro 3 million
+for 250 $ — on the paid plans a tile counts as two calls. calls = products × (area tiles × pictures + the snapshot asks); the snapshot is
+asked only when a picture can be due (about two asks a picture, since 16 Nov). A tile list of 39 with one product every 4 h ≈ 7 400 calls
+a month (Free); the same every hour ≈ 29 000; europe:5 with the three default products at 30 min ≈ 212 000 — the levers are
+RAINBOW_CADENCE_MIN, the tile list or zoom, RAINBOW_LAYERS and RAINBOW_FRAMES. An area or product taken out of the variables leaves the site
+at the next run (its folder is removed; its tiles of the month stay counted).
 The key travels in a header, never in a URL, so it never lands in a log.
 """
 import argparse, datetime as dt, io, json, math, os, re, sys, time
@@ -415,7 +420,7 @@ def main():
     color = (os.environ.get('RAINBOW_COLOR', '') or 'dbz_u8').strip()
     type_color = (os.environ.get('RAINBOW_TYPE_COLOR', '') or '0').strip()
     cadence = env_int('RAINBOW_CADENCE_MIN', 30)
-    budget = env_int('RAINBOW_MONTHLY_TILES', 100000)
+    budget = env_int('RAINBOW_MONTHLY_TILES', 9500)
     steps = frames_wanted(os.environ.get('RAINBOW_FRAMES', ''), cadence)
     want_map = (os.environ.get('RAINBOW_COVERAGE_MAP', '') or '1').strip() not in ('0', 'no', 'off', 'false')
     areas = areas_wanted(os.environ.get('RAINBOW_AREAS', ''))
@@ -449,6 +454,24 @@ def main():
     for token in tokens:
         kind, pname, suffix, forecast, zmax = rb.product(token, color if kind_of(token) == 'precip' else (type_color if token == 'type' else ''))
         skip = skip_open if kind == 'precip' else None                           # the type and the clouds have no open-data twin
+        # the snapshot is asked only when a picture can be due (16 Nov, Rainbow's Free plan of 10 000 calls a month): a run every ten minutes
+        # with a cadence of an hour spent five of six asks on nothing — the kept picture's age against the clock decides first, the same
+        # rule as below (the snapshot is never younger than the clock, so no due picture is missed)
+        if not a.force:
+            fresh = [name for name, *_ in areas
+                     if (lambda nw: nw is not None and (now - nw) < dt.timedelta(minutes=max(1, cadence - 2)))(
+                         newest_kept(a.out + '/rb-' + name + ('' if (kind == 'precip' and name not in first_precip_done) else suffix)))]
+            if len(fresh) == len(areas):
+                for name, *_ in areas:
+                    folder = 'rb-' + name + ('' if (kind == 'precip' and name not in first_precip_done) else suffix)
+                    d = a.out + '/' + folder
+                    u = usage_load(d)
+                    if u['month'] != month:
+                        u = {'month': month, 'tiles': 0, 'runs': 0}; usage_save(d, u)
+                    log(folder, 'within the cadence (newest %s, now %s, %d min) — no ask' % (newest_kept(d).strftime('%H:%MZ'), now.strftime('%H:%MZ'), cadence))
+                    status(d, True, '', tiles_month=u['tiles'], budget=budget, cadence_min=cadence, note='within the cadence')
+                    if kind == 'precip': first_precip_done.add(name)
+                continue
         try:
             snap = rb.snapshot()
         except Exception as e:
@@ -519,6 +542,23 @@ def main():
                 status(d, False, str(e)[:200], tiles_month=u['tiles'], budget=budget, cadence_min=cadence)
             if kind == 'precip':
                 first_precip_done.add(name)
+    # an area or product no longer configured (16 Nov): its folder leaves the site — else the boards keep a picture that only ages — and its
+    # tiles of the month move to the first configured folder, so the budget still counts them
+    wanted, firsts = [], set()
+    for token in tokens:
+        k, sfx = kind_of(token), PRODUCTS[token][4]
+        for name, *_ in areas:
+            wanted.append('rb-' + name + ('' if (k == 'precip' and name not in firsts) else sfx))
+            if k == 'precip': firsts.add(name)
+    for d in sorted(os.listdir(a.out)) if os.path.isdir(a.out) else []:
+        if d.startswith('rb-') and d not in wanted and os.path.isdir(a.out + '/' + d):
+            gone = usage_load(a.out + '/' + d)
+            if gone['month'] == month and gone['tiles'] and wanted:
+                u = usage_load(a.out + '/' + wanted[0])
+                if u['month'] != month: u = {'month': month, 'tiles': 0, 'runs': 0}
+                u['tiles'] += gone['tiles']; os.makedirs(a.out + '/' + wanted[0], exist_ok=True); usage_save(a.out + '/' + wanted[0], u)
+            import shutil; shutil.rmtree(a.out + '/' + d, ignore_errors=True)
+            log(d, 'no longer configured — folder removed (%d tiles of the month carried to %s)' % (gone['tiles'] if gone['month'] == month else 0, wanted[0] if wanted else '-'))
     log('Rainbow.ai: requests this run', rb.requests, '· month total', usage_total(a.out, month), 'of', budget)
     return 0
 

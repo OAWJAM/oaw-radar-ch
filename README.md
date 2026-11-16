@@ -147,21 +147,21 @@ The Nordic composite carries the Swedish and Finnish radars, so the single sourc
 | `RAINBOW_AREAS` | `europe:5` | a comma list of `<name>:<zoom>[:<x0>-<x1>:<y0>-<y1>]` or, since 15 Nov, `<name>:<zoom>:<x>/<y>+<x>/<y>+…` — a tile list: one area and one layer for the tiles the owner ticked on the installation's calculator, the box their bounding box, the tiles between them not fetched (transparent); presets `europe:5` (8 × 6 = 48 tiles, 22.5 W – 67.5 E · 21.9 – 66.5 N — the Canaries, Egypt and the Levant inside, ~5 km a pixel), `eu:5` (6 × 5 = 30 tiles, 22.5 W – 45 E · 32 – 66.5 N), `world:3` (8 × 8 = 64 tiles, ~20 km a pixel); several: `europe:5,world:3` |
 | `RAINBOW_FRAMES` | `0` | the nowcast steps in minutes for the precipitation products — a list `0,30,60,120,180,240`, a range `0-240/10` (25 steps) or `loop` = one step per `RAINBOW_CADENCE_MIN` up to +240 (the boards' choice, 7 Nov: the steps ahead at the loop's cadence — 9 steps at 30 min, 5 at 60); 0 is the picture of now, the rest go to `nowcast/` |
 | `RAINBOW_CADENCE_MIN` | `30` | a new picture only when the newest one is at least this old (the snapshot's clock) — the lever on the cost |
-| `RAINBOW_MONTHLY_TILES` | `100000` | the month's tile budget **over every product and area**; reached, the runs skip until the next month and `status.json` says so — never a surprise bill |
+| `RAINBOW_MONTHLY_TILES` | `9500` | the month's **call** budget over every product and area (tiles and snapshot asks together); reached, the runs skip until the next month and `status.json` says so — never a surprise bill, and under Rainbow's Free plan (10 000 calls a month, 16 Nov) the service never pauses |
 | `RAINBOW_COLOR` | `dbz_u8` | the palette asked for the precipitation products; `dbz_u8` is decoded into this site's scale, a number (0–9) keeps Rainbow's own picture |
 | `RAINBOW_TYPE_COLOR` | `0` | the palette of the type product |
 | `RAINBOW_COVERAGE_MAP` | `1` | once a day the radars' coverage mask of each area as `coverage-map.png` (one area's tiles a day) |
 
-**What it costs** (Rainbow's list as read on 7 Nov: Tiles API 30 000 tiles a month free, then 0.20 $ a thousand; the Nowcast API 5 000 requests free, then 0.10 $ a thousand — theirs to change): tiles a month = products × the area's tiles × steps × runs. With GitHub's schedule the runs come every ten minutes at best, about hourly under load, so the real bill is often below the figure.
+**What it costs** (Rainbow's plans as read on 16 Nov — the legacy pay-as-you-go plan is discontinued): **Free** 10 000 calls a month, no card, the service pauses at the limit; **Starter** 260 000 calls for 25 $ a month, **Growth** 1.1 million for 100 $, **Pro** 3 million for 250 $ — on the paid plans a tile counts as two calls (theirs to change). Calls a month = products × (the area's tiles × steps × pictures + the snapshot asks). Since 16 Nov the snapshot is asked only when a picture can be due (the kept picture's age against the clock), about two asks a picture, so a run every ten minutes costs nothing between pictures.
 
-| Set-up (europe:5 = 48 tiles) | every 30 min | every 10 min |
+| Set-up | calls a month | plan |
 |---|---|---|
-| the type map alone | ≈ 8 $ | ≈ 35 $ |
-| the defaults: AI radar now + type + clouds | ≈ 35 $ | ≈ 118 $ |
-| the defaults with a 6-step loop (`0,30,60,120,180,240`) | ≈ 105 $ | ≈ 326 $ |
-| the defaults with the 25-step loop (`0-240/10`) | ≈ 367 $ | ≈ 1114 $ |
-| `eu:5` (30 tiles) instead of `europe:5` | × 0.63 | × 0.63 |
+| a tile list of 39, one product, every 4 h (6 pictures a day) | ≈ 7 400 | Free (≈ 74 %) |
+| the same every 3 h | ≈ 9 700 | too close to Free's 10 000 |
+| the same every hour | ≈ 29 000 | Starter |
+| `europe:5` (48 tiles), the defaults: AI radar now + type + clouds, every 30 min | ≈ 212 000 tiles = 424 000 calls | Growth |
+| the defaults with the 25-step loop (`0-240/10`) | ≈ 5.2 million tiles | — |
 
-The clouds are the cheapest to drop (the boards have Meteosat for free); the loop and the cadence are the levers. `usage.json` in every folder keeps the count; the budget variable is the brake.
+The clouds are the cheapest to drop (the boards have Meteosat for free); the cadence, the tile list and the loop are the levers. `usage.json` in every folder keeps the count; the budget variable is the brake. An area or product taken out of the variables leaves the site at the next run (its folder is removed, its tiles of the month stay counted).
 
 **First keyed run**: Actions → *probe* → Run workflow logs what each product answers (the snapshot, a tile's size and mode, whether `dbz_u8` is served, whether the forecast axis answers). Should a product not serve `dbz_u8`, set `RAINBOW_COLOR` to a palette number — the picture then comes as Rainbow paints it, the coverage edge still from its transparent pixels.
