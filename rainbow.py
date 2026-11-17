@@ -20,6 +20,7 @@ run logs «no key — skipped» and stays green. Repository *variables* (same pa
                                                                               world:3 (64 tiles); several: europe:5,world:3
   RAINBOW_FRAMES         0 (default)                                        — the nowcast steps in minutes for the precip products: a list «0,30,60,120,180,240», «loop» (every cadence to +240)
                                                                               or a range «0-240/10»; 0 is the picture of now, the rest go to nowcast/
+  RAINBOW_OFF            0 (default)                                        — 1: the source switched off; the rb-… folders leave the site at the next run (17 Nov)
   RAINBOW_CADENCE_MIN    30 (default)                                       — a new picture only when the newest is at least this old
   RAINBOW_MONTHLY_TILES  9500 (default)                                     — the month's call budget over every product and area (tiles and snapshot asks); reached → skipped
                                                                               until the next month. 9 500 stays under Rainbow's Free plan (16 Nov: 10 000 calls a month)
@@ -424,6 +425,12 @@ def main():
     steps = frames_wanted(os.environ.get('RAINBOW_FRAMES', ''), cadence)
     want_map = (os.environ.get('RAINBOW_COVERAGE_MAP', '') or '1').strip() not in ('0', 'no', 'off', 'false')
     areas = areas_wanted(os.environ.get('RAINBOW_AREAS', ''))
+    if (os.environ.get('RAINBOW_OFF', '') or '0').strip().lower() in ('1', 'yes', 'on', 'true'):        # the switch (17 Nov, the owner): off — the Rainbow folders leave the site
+        gone = [d for d in (sorted(os.listdir(a.out)) if os.path.isdir(a.out) else []) if d.startswith('rb-') and os.path.isdir(a.out + '/' + d)]
+        for d in gone:
+            import shutil; shutil.rmtree(a.out + '/' + d, ignore_errors=True)
+        log('Rainbow.ai: switched off (the variable RAINBOW_OFF) —', (str(len(gone)) + ' folder(s) removed: ' + ', '.join(gone)) if gone else 'nothing on the site')
+        return 0
     if not key:
         log('Rainbow.ai: no key — skipped (the secret RAINBOW_API_KEY switches the source on)')
         return 0

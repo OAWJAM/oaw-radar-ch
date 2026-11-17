@@ -56,6 +56,7 @@ jobs:
           RAINBOW_AREAS: ${{ vars.RAINBOW_AREAS }}
           RAINBOW_CADENCE_MIN: ${{ vars.RAINBOW_CADENCE_MIN }}
           RAINBOW_MONTHLY_TILES: ${{ vars.RAINBOW_MONTHLY_TILES }}
+          RAINBOW_OFF: ${{ vars.RAINBOW_OFF }}
           RAINBOW_COLOR: ${{ vars.RAINBOW_COLOR }}
       - run: python3 wms.py --out site --frames 12 --backfill 12
         continue-on-error: true
