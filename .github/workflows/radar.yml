@@ -1,7 +1,6 @@
 # Radar CH — converts the newest MeteoSwiss precipitation radar picture every ten minutes and publishes it on GitHub Pages;
 # the national radars with a keyless WMS (DWD, FMI) are fetched beside it (wms.py), the gridded ones (SMHI, GeoSphere's INCA analysis) by grids.py,
 # Rainbow.ai's world mosaic by rainbow.py (keyed, off until the secret exists), and all of them are listed in sources.json;
-# EUMETSAT's Lightning Imager flashes by lightning.py (keyed, 15 Nov) go to li/ beside them.
 # Pages: Settings → Pages → Source "GitHub Actions" (once). The site then stands at https://<owner>.github.io/<repo>/
 name: radar
 on:
@@ -60,12 +59,8 @@ jobs:
           RAINBOW_COLOR: ${{ vars.RAINBOW_COLOR }}
       - run: python3 wms.py --out site --frames 12 --backfill 12
         continue-on-error: true
-      # EUMETSAT's Lightning Imager flashes (15 Nov, the owner's 315 «ja»): off until the two secrets exist; li/ carries no frames.json, so it is no radar source
-      - run: python3 lightning.py --out site --window 150
-        continue-on-error: true
-        env:
-          EUMETSAT_CONSUMER_KEY: ${{ secrets.EUMETSAT_CONSUMER_KEY }}
-          EUMETSAT_CONSUMER_SECRET: ${{ secrets.EUMETSAT_CONSUMER_SECRET }}
+      # the lightning folder of 15–17 Nov (EUMETSAT's Lightning Imager, dropped by the owner on 17 Nov — 315) leaves the cached site
+      - run: rm -rf site/li
       # the radars' reach as one outline (8 Nov, the owner: «nur den Aussenrand»): coverage-union.json at the root, from every source's coverage.json
       - run: python3 coverage.py --out site
         continue-on-error: true
